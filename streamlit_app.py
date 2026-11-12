@@ -1,10 +1,11 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment & Async DB Edition
+📚 Assignment Tracker — Zero-Latency @st.fragment & Onboarding Updates Edition
 Features:
-- Single-query session hydration (1 DB read per login instead of 6)
+- First-Sign-In "What's New, Previous Updates & Quick Guide" Modal (version-tracked in DB)
+- Single-query session hydration (1 DB read per login)
 - Optimistic in-memory UI + background thread PostgreSQL sync (0ms click freeze)
 - Isolated @st.fragment views for Assignments, Tests, Other, AI Planner & Recovery
-- Mobile portrait layout optimization (inline controls, clean card stacking)
+- Mobile portrait layout optimization
 """
 
 from __future__ import annotations
@@ -20,6 +21,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
+
+# Bump this version string anytime you push new features to auto-show the modal once per user
+CURRENT_APP_VERSION = "3.0"
 
 
 # Timezone helper for Simsbury/Eastern Time
@@ -261,6 +265,47 @@ st.markdown(
         justify-content: space-between;
     }
 
+    /* Update / Changelog Modal Styling */
+    .update-card {
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+    }
+
+    .update-ver-badge {
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+        color: #ffffff;
+        padding: 2px 8px;
+        border-radius: 5px;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.03em;
+        margin-right: 6px;
+    }
+
+    .update-old-badge {
+        background: rgba(148, 163, 184, 0.15);
+        color: #cbd5e1;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        padding: 2px 8px;
+        border-radius: 5px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        margin-right: 6px;
+    }
+
+    .tip-card {
+        background: rgba(14, 165, 233, 0.08);
+        border-left: 3px solid #38bdf8;
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-bottom: 9px;
+        font-size: 0.84rem;
+        color: #e2e8f0;
+    }
+
     /* -------------------------------------------
        MOBILE & VERTICAL PORTRAIT OPTIMIZATIONS
     ------------------------------------------- */
@@ -279,10 +324,9 @@ st.markdown(
             font-size: 0.74rem !important;
         }
 
-        /* Keep internal card rows, slot rows, and toolbar buttons inline instead of stacking into tall clutter */
         div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) {
             flex-wrap: nowrap !important;
-            gap: 6px !important;
+            gap: 5px !important;
         }
         div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) > div[data-testid="stColumn"] {
             min-width: 0 !important;
@@ -309,8 +353,8 @@ st.markdown(
         }
 
         .stButton button {
-            padding: 4px 6px !important;
-            font-size: 0.74rem !important;
+            padding: 4px 5px !important;
+            font-size: 0.71rem !important;
             min-height: 32px !important;
         }
 
@@ -391,6 +435,7 @@ SYSTEM_TITLES = {
     "__SYSTEM_PRIO_CONFIG__",
     "__SYSTEM_MAX_WORK_CONFIG__",
     "__SYSTEM_COMPLETED_SLOTS__",
+    "__SYSTEM_SEEN_UPDATES__",
 }
 
 
@@ -608,6 +653,10 @@ def get_completed_slots_config_id(user_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_completed_slots_config_{user_id}"))
 
 
+def get_seen_updates_config_id(user_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"user_seen_updates_config_{user_id}"))
+
+
 def _pack_notes(notes_text: str, prev_status: str) -> str:
     return json.dumps({"text": notes_text, "prev_status": prev_status})
 
@@ -635,7 +684,7 @@ def clear_all_session_caches():
     for k in [
         "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
         "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
-        "_ai_plan_result", "_undo_slot_state", "_hydrated_uid"
+        "cfg_seen_updates", "_ai_plan_result", "_undo_slot_state", "_hydrated_uid"
     ]:
         if k in st.session_state:
             del st.session_state[k]
@@ -711,6 +760,7 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     prio_mode: Optional[str] = None
     max_work: Dict[str, int] = {d: 60 for d in DAYS_OF_WEEK}
     completed_slots: Dict[str, Dict[str, Any]] = {}
+    seen_updates_ver: str = ""
 
     assignment_rows: List[Dict[str, Any]] = []
     expired_done_ids: List[str] = []
@@ -758,6 +808,8 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
                         completed_slots = today_data
             except Exception:
                 pass
+        elif r_title == "__SYSTEM_SEEN_UPDATES__":
+            seen_updates_ver = str(r_notes or "").strip()
         elif r_title not in SYSTEM_TITLES:
             status_val = str(r.get("status") or "Not Started")
             due_val = str(r.get("due_date") or "")
@@ -801,6 +853,7 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     st.session_state["cfg_max_work"] = max_work
     st.session_state["cfg_completed_slots"] = completed_slots
     st.session_state["cfg_completed_slots_date"] = today_iso
+    st.session_state["cfg_seen_updates"] = seen_updates_ver
     st.session_state["_hydrated_uid"] = user_id
 
 
@@ -862,6 +915,25 @@ def _write_prio_config(user_id: str, mode: str) -> None:
         user_id,
         "__SYSTEM_PRIO_CONFIG__",
         mode,
+        get_local_now().isoformat(),
+    )
+
+
+def get_seen_updates_cached(user_id: str) -> str:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_seen_updates", "")
+
+
+def _write_seen_updates(user_id: str, version_str: str) -> None:
+    if not user_id:
+        return
+    st.session_state["cfg_seen_updates"] = version_str
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_seen_updates_config_id(user_id),
+        user_id,
+        "__SYSTEM_SEEN_UPDATES__",
+        version_str,
         get_local_now().isoformat(),
     )
 
@@ -1407,12 +1479,7 @@ def render_terminal_auth_page():
                             clear_all_session_caches()
                             st.session_state.user = res["data"]
                             u_id = res["data"]["id"]
-                            # Single SQL query loads everything before clearing auth screen
                             hydrate_user_session(u_id, force=True)
-                            if not get_courses_cached(u_id):
-                                st.session_state["_show_welcome_courses_modal"] = True
-                            if not get_prio_cached(u_id):
-                                st.session_state["_show_prio_config_modal"] = True
                             auth_container.empty()
                             safe_rerun()
 
@@ -1420,19 +1487,115 @@ def render_terminal_auth_page():
 
 
 # -----------------------
-# Modal Dialogs
+# Modal Dialogs (What's New, Welcome Courses, Priority, Add/Edit Tasks)
 # -----------------------
+@dialog_decorator(f"Welcome to Assignment Tracker v{CURRENT_APP_VERSION}")
+def show_updates_dialog(user_id: str, is_first_time: bool = False):
+    if is_first_time:
+        st.caption("Here is what's new, what changed recently, and a few tips to get started.")
+    else:
+        st.caption("Release notes, changelog history, and helpful tracker tips.")
+
+    tab_latest, tab_prev, tab_tips = st.tabs([
+        "✨ Latest Updates",
+        "📜 Previous Updates",
+        "💡 Things to Know",
+    ])
+
+    with tab_latest:
+        st.markdown(
+            """
+            <div class='update-card'>
+                <div style='margin-bottom:6px;'><span class='update-ver-badge'>v3.0 NEW</span> <b style='color:#f8fafc;'>Zero-Latency Speed Upgrade</b></div>
+                <div style='font-size:0.83rem; color:#cbd5e1; line-height:1.45;'>
+                    Checking off tasks, switching statuses, and updating your schedule now happen <b>instantaneously</b> with zero page freezes or reload lag.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:6px;'><span class='update-ver-badge'>MOBILE</span> <b style='color:#f8fafc;'>Vertical Phone Layout Overhaul</b></div>
+                <div style='font-size:0.83rem; color:#cbd5e1; line-height:1.45;'>
+                    Redesigned cards, inline toolbar buttons, and top-priority AI daily schedules so vertical phone screens stay clean and uncluttered.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:6px;'><span class='update-ver-badge'>UI</span> <b style='color:#f8fafc;'>New Stacked-Card Brand Identity</b></div>
+                <div style='font-size:0.83rem; color:#cbd5e1; line-height:1.45;'>
+                    Added the custom stacked-card icon header and streamlined pill navigation across all tabs.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with tab_prev:
+        st.markdown(
+            """
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v2.5</span> <b style='color:#f8fafc;'>Smart AI Time-Slot Planner & Daily Limits</b></div>
+                <div style='font-size:0.81rem; color:#94a3b8; line-height:1.4;'>
+                    Added automatic daily scheduling around your recurring weekly commitments, customizable per-day work caps, and 15-second Undo toasts.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v2.0</span> <b style='color:#f8fafc;'>Completed & Recovery Center</b></div>
+                <div style='font-size:0.81rem; color:#94a3b8; line-height:1.4;'>
+                    Added a dedicated recovery tab to restore accidentally checked-off tasks or daily study slots, plus auto-cleanup of past-due finished items.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v1.5</span> <b style='color:#f8fafc;'>Custom Priority Scales</b></div>
+                <div style='font-size:0.81rem; color:#94a3b8; line-height:1.4;'>
+                    Added support for Low / Medium / High badges, a 1–10 numeric slider, or both combined.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v1.0</span> <b style='color:#f8fafc;'>Initial Release</b></div>
+                <div style='font-size:0.81rem; color:#94a3b8; line-height:1.4;'>
+                    Launched color-coded subject badges, due-date countdowns, and separate views for Assignments, Tests & Quizzes, and Other tasks.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with tab_tips:
+        st.markdown(
+            """
+            <div class='tip-card'>
+                <b>1. Auto-Repeating Study & Daily Tasks:</b><br/>
+                Any task set to <i>Test & Quizzes</i>, containing words like <i>"study"</i>, <i>"review"</i>, or <i>"prep"</i>, or using <b>/day</b> in its duration (e.g. <code>30 mins/day</code>) will automatically schedule a session every day leading up to its due date.
+            </div>
+            <div class='tip-card'>
+                <b>2. Block Out Your Weekly Commitments First:</b><br/>
+                Add sports, clubs, or practices in the <b>Weekly Schedule & AI Planner</b> tab so the AI automatically schedules homework around your busy hours.
+            </div>
+            <div class='tip-card'>
+                <b>3. Automatic Cleanup & Recovery:</b><br/>
+                Completed (<code>Done</code>) tasks move to <b>Completed & Recovery</b> where you can restore them anytime until their due date passes.
+            </div>
+            <div class='tip-card'>
+                <b>4. Customize Anytime:</b><br/>
+                Use the top toolbar to manage your courses, switch your priority scale, or reopen this guide via <b>Updates</b>.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    btn_text = "Got it, Let's Go!" if is_first_time else "Close"
+    if st.button(btn_text, key="dismiss_updates_modal_btn", use_container_width=True):
+        _write_seen_updates(user_id, CURRENT_APP_VERSION)
+        safe_rerun()
+
+
 @dialog_decorator("Welcome! Setup Your Classes")
 def show_welcome_courses_dialog(user_id: str):
-    st.session_state["_show_welcome_courses_modal"] = False
-
     st.markdown("### Setup Your Courses")
     courses_input = st.text_area(
         "Enter your subjects (comma separated):",
         value="MATH, SCIENCE, ENGLISH, HISTORY, OTHER",
     )
 
-    if st.button("Save Schedule", key="save_initial_courses_btn"):
+    if st.button("Save Schedule", key="save_initial_courses_btn", use_container_width=True):
         parsed_courses = [c.strip().upper() for c in courses_input.replace("\n", ",").split(",") if c.strip()]
         if parsed_courses:
             _write_courses_file(user_id, parsed_courses)
@@ -1441,8 +1604,6 @@ def show_welcome_courses_dialog(user_id: str):
 
 @dialog_decorator("Choose Your Priority System")
 def show_prio_config_dialog(user_id: str):
-    st.session_state["_show_prio_config_modal"] = False
-
     st.markdown("### How would you like to view & set task priorities?")
     st.write("You can update this setting anytime from the toolbar.")
 
@@ -1454,7 +1615,7 @@ def show_prio_config_dialog(user_id: str):
         key="prio_modal_radio"
     )
 
-    if st.button("Save Preference", key="save_prio_choice_btn"):
+    if st.button("Save Preference", key="save_prio_choice_btn", use_container_width=True):
         _write_prio_config(user_id, prio_choice)
         safe_rerun()
 
@@ -1690,7 +1851,6 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                     prio_cls = f"prio-{prio_label.lower()}"
                     prio_display_str = format_priority_display(prio_num, user_prio_mode)
 
-                    # Row 1: Checkbox, Course Badge & Edit Action (Stays inline on phone portrait)
                     c_top_a, c_top_b, c_top_c = st.columns([0.55, 3.45, 1.2])
 
                     with c_top_a:
@@ -1710,7 +1870,6 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                         if st.button("Edit", key=f"{key_prefix}edit_btn_{aid}", use_container_width=True):
                             show_edit_assignment_dialog(user_id, aid, user_prio_mode)
 
-                    # Row 2: Dedicated Status Selector
                     st.selectbox(
                         "Status",
                         STATUS_OPTIONS,
@@ -1743,7 +1902,6 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
 
 @fragment_decorator
 def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str):
-    # AI Daily Action Plan placed first so mobile portrait shows today's plan immediately at the top
     col_ai_main, col_sched_side = st.columns([1.85, 1.15])
 
     user_schedule = list(get_schedule_cached(user_id))
@@ -1992,7 +2150,7 @@ def render_completed_recovery_fragment(user_id: str):
 
 
 # -----------------------
-# Auth Session Control & Preferences
+# Auth Session Control & Sequential Onboarding Modals
 # -----------------------
 user = st.session_state.get("user")
 
@@ -2005,27 +2163,24 @@ email = str(user.get("email", "User"))
 
 # Single-query session hydration (instant on subsequent fragment reruns)
 hydrate_user_session(user_id)
+
 active_prio_mode = get_prio_cached(user_id)
-
-if not get_courses_cached(user_id) and "_show_welcome_courses_modal" not in st.session_state:
-    st.session_state["_show_welcome_courses_modal"] = True
-
-if not active_prio_mode and "_show_prio_config_modal" not in st.session_state:
-    st.session_state["_show_prio_config_modal"] = True
-
+seen_updates_ver = get_seen_updates_cached(user_id)
 user_prio_mode = active_prio_mode or "Low / Medium / High"
 
-if st.session_state.get("_show_welcome_courses_modal", False):
+# Sequential onboarding queue (ensures only 1 @st.dialog opens per script run)
+if seen_updates_ver != CURRENT_APP_VERSION:
+    show_updates_dialog(user_id, is_first_time=True)
+elif not get_courses_cached(user_id):
     show_welcome_courses_dialog(user_id)
-
-if st.session_state.get("_show_prio_config_modal", False):
+elif not active_prio_mode:
     show_prio_config_dialog(user_id)
 
 
 # -----------------------
 # Main App Header
 # -----------------------
-col_header_left, col_header_right = st.columns([2.2, 2.8])
+col_header_left, col_header_right = st.columns([2.0, 3.0])
 
 with col_header_left:
     st.markdown(
@@ -2046,7 +2201,7 @@ with col_header_left:
     )
 
 with col_header_right:
-    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.1, 1.1, 1.1, 0.9])
+    btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns([1.05, 1.0, 1.0, 1.0, 1.0])
     with btn_col1:
         if st.button("+ Task", key="toolbar_add", use_container_width=True):
             show_add_assignment_dialog(user_id, user_prio_mode)
@@ -2057,6 +2212,9 @@ with col_header_right:
         if st.button("Priority", key="toolbar_prio_sys", use_container_width=True):
             show_prio_config_dialog(user_id)
     with btn_col4:
+        if st.button("Updates", key="toolbar_updates", use_container_width=True):
+            show_updates_dialog(user_id, is_first_time=False)
+    with btn_col5:
         if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
             sign_out_user()
 
