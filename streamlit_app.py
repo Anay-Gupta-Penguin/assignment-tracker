@@ -297,6 +297,13 @@ div[data-testid="stCaptionContainer"] p {
     color: var(--text-muted) !important;
 }
 
+/* Crisp Checkbox Borders */
+div[data-testid="stCheckbox"] label > span:first-child,
+div[data-testid="stCheckbox"] div[role="checkbox"] {
+    border: 1.5px solid var(--accent-readable) !important;
+    border-radius: 5px !important;
+}
+
 /* Inputs, Selectboxes, Textareas & Dropdown Popovers */
 div[data-baseweb="input"] > div,
 div[data-baseweb="base-input"] > input,
@@ -345,13 +352,13 @@ li[aria-selected="true"] {
     box-shadow: 0 4px 12px var(--accent-glow) !important;
 }
 
-/* Pill Navigation Bar */
+/* Pill Navigation Bar (Compatible with all Streamlit versions) */
 div[data-testid="stRadio"] > div[role="radiogroup"] {
     display: flex;
     flex-wrap: nowrap;
     gap: 6px;
-    background-color: var(--nav-bg);
-    border: 1.5px solid var(--card-border);
+    background-color: var(--nav-bg) !important;
+    border: 1.5px solid var(--card-border) !important;
     border-radius: 12px;
     padding: 5px;
     margin-bottom: 18px;
@@ -372,8 +379,12 @@ div[data-testid="stRadio"] > div[role="radiogroup"] > label {
     white-space: nowrap;
     transition: all 0.15s ease-in-out;
 }
-div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
+div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child,
+div[data-testid="stRadio"] > div[role="radiogroup"] > label > span:first-child,
+div[data-testid="stRadio"] input[type="radio"] {
     display: none !important;
+    width: 0 !important;
+    height: 0 !important;
 }
 div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
     color: var(--text-secondary) !important;
@@ -384,6 +395,7 @@ div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
 div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-checked="true"],
 div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
     background: var(--accent) !important;
+    background-color: var(--accent) !important;
     box-shadow: 0 4px 14px var(--accent-glow) !important;
 }
 div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-checked="true"] p,
@@ -391,15 +403,18 @@ div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) p
     color: var(--on-accent-text) !important;
 }
 
-/* Card Containers, Forms & Expanders */
+/* Frosted Card Containers, Forms & Expanders (Version-Independent Selectors) */
 div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"]:has(.card-task-title),
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]:has(.card-task-title),
 div[data-testid="stForm"],
 div[data-testid="stExpander"] {
     background: var(--card-bg) !important;
+    background-color: var(--card-bg) !important;
     border: 1.5px solid var(--card-border) !important;
     border-radius: 14px !important;
-    box-shadow: 0 8px 24px var(--shadow-color);
-    backdrop-filter: blur(14px);
+    box-shadow: 0 8px 24px var(--shadow-color) !important;
+    backdrop-filter: blur(14px) !important;
 }
 div[data-testid="stExpander"] summary,
 div[data-testid="stExpander"] summary p,
@@ -408,14 +423,18 @@ div[data-testid="stExpander"] summary svg {
     fill: var(--text-primary) !important;
     font-weight: 700 !important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"] {
+div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"]:has(.card-task-title),
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]:has(.card-task-title) {
     padding: 16px 18px !important;
     margin-bottom: 16px !important;
     transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+div[data-testid="stVerticalBlockBorderWrapper"]:hover,
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"]:has(.card-task-title):hover,
+div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]:has(.card-task-title):hover {
     border-color: var(--accent-readable) !important;
-    box-shadow: 0 10px 28px var(--accent-glow);
+    box-shadow: 0 10px 28px var(--accent-glow) !important;
 }
 
 /* Dialog Modal Surface */
@@ -685,11 +704,11 @@ div[data-testid="stDialog"] div[role="dialog"] {
     }
     .app-title { font-size: 1.25rem !important; }
     .app-subtitle { font-size: 0.73rem !important; }
-    div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) {
+    div[data-testid="stHorizontalBlock"]:not(:has(.card-task-title)) {
         flex-wrap: nowrap !important;
         gap: 4px !important;
     }
-    div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) > div[data-testid="stColumn"] {
+    div[data-testid="stHorizontalBlock"]:not(:has(.card-task-title)) > div[data-testid="stColumn"] {
         min-width: 0 !important;
     }
     div[data-testid="stRadio"] > div[role="radiogroup"] {
@@ -703,7 +722,9 @@ div[data-testid="stDialog"] div[role="dialog"] {
     div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
         font-size: 0.75rem !important;
     }
-    div[data-testid="stVerticalBlockBorderWrapper"] {
+    div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"]:has(.card-task-title),
+    div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]:has(.card-task-title) {
         padding: 12px 13px !important;
         margin-bottom: 10px !important;
         border-radius: 12px !important;
