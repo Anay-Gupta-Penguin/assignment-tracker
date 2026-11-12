@@ -1,10 +1,10 @@
 """
-📚 Assignment Tracker — Complete & Fixed Edition with Mobile Portrait Optimization
+📚 Assignment Tracker — Zero-Latency @st.fragment & Async DB Edition
 Features:
-- Instant Auth Transition (No lingering login screen)
-- Optimized Mobile / Vertical Screen Responsive Layout
-- SVG Stacked-Card Logo
-- Done Task Auto-Purging & Completed Recovery Center
+- Single-query session hydration (1 DB read per login instead of 6)
+- Optimistic in-memory UI + background thread PostgreSQL sync (0ms click freeze)
+- Isolated @st.fragment views for Assignments, Tests, Other, AI Planner & Recovery
+- Mobile portrait layout optimization (inline controls, clean card stacking)
 """
 
 from __future__ import annotations
@@ -12,13 +12,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import uuid
 from datetime import datetime, date, timedelta, time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text
 
 
@@ -65,34 +65,50 @@ st.markdown(
     div[data-testid="stToolbar"], div[data-testid="stDecoration"], div[data-testid="stStatusWidget"] {display: none !important;}
     section[data-testid="stSidebar"], div[data-testid="collapsedControl"], button[data-testid="stSidebarCollapseButton"] {display: none !important;}
 
-    .stTabs [data-baseweb="tab-list"] {
+    /* Pill Navigation Bar */
+    div[data-testid="stRadio"] > div[role="radiogroup"] {
+        display: flex;
+        flex-wrap: nowrap;
         gap: 6px;
-        background-color: rgba(15, 23, 42, 0.6);
+        background-color: rgba(15, 23, 42, 0.65);
         border: 1px solid #1e293b;
         border-radius: 12px;
-        padding: 4px;
-        margin-bottom: 22px;
+        padding: 5px;
+        margin-bottom: 18px;
         backdrop-filter: blur(8px);
         overflow-x: auto;
+        scrollbar-width: none;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"]::-webkit-scrollbar {
+        display: none;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+        background-color: transparent !important;
+        border-radius: 8px !important;
+        padding: 7px 16px !important;
+        margin: 0 !important;
+        cursor: pointer;
+        border: none !important;
         white-space: nowrap;
+        transition: all 0.15s ease-in-out;
     }
-
-    .stTabs [data-baseweb="tab"] {
-        height: 40px;
-        border-radius: 8px;
-        color: #94a3b8;
-        font-weight: 600;
-        font-size: 0.85rem;
-        padding: 6px 16px;
-        background-color: transparent;
-        border: none;
-        transition: all 0.2s ease-in-out;
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
+        display: none !important;
     }
-
-    .stTabs [aria-selected="true"] {
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        margin: 0 !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-checked="true"],
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
         background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+        box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
+    }
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-checked="true"] p,
+    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) p {
         color: #ffffff !important;
-        box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
     }
 
     div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -130,12 +146,12 @@ st.markdown(
         background: linear-gradient(90deg, rgba(30, 27, 75, 0.5) 0%, rgba(15, 23, 42, 0.7) 100%);
         border: 1px solid rgba(99, 102, 241, 0.25);
         border-radius: 10px;
-        padding: 10px 18px;
-        font-size: 0.85rem;
+        padding: 9px 16px;
+        font-size: 0.84rem;
         font-weight: 700;
         color: #818cf8;
         text-align: center;
-        margin-bottom: 20px;
+        margin-bottom: 14px;
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
     }
 
@@ -227,27 +243,11 @@ st.markdown(
         background-color: #0f172a;
         border: 1px solid #3b82f6;
         border-radius: 8px;
-        padding: 10px 16px;
-        margin-bottom: 16px;
-        overflow: hidden;
+        padding: 10px 14px;
+        margin-bottom: 12px;
         display: flex;
         align-items: center;
         justify-content: space-between;
-    }
-
-    .undo-progress-bar {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        height: 3px;
-        background-color: #3b82f6;
-        width: 100%;
-        animation: countdown-anim 15s linear forwards;
-    }
-
-    @keyframes countdown-anim {
-        from { width: 100%; }
-        to { width: 0%; }
     }
 
     .recovery-card {
@@ -262,56 +262,79 @@ st.markdown(
     }
 
     /* -------------------------------------------
-       MOBILE & PORTRAIT DISPLAY OPTIMIZATIONS
+       MOBILE & VERTICAL PORTRAIT OPTIMIZATIONS
     ------------------------------------------- */
     @media (max-width: 768px) {
         .main .block-container {
             padding-top: 0.5rem !important;
-            padding-left: 0.4rem !important;
-            padding-right: 0.4rem !important;
+            padding-left: 0.45rem !important;
+            padding-right: 0.45rem !important;
         }
 
         .app-title {
-            font-size: 1.3rem !important;
+            font-size: 1.28rem !important;
         }
 
-        .stTabs [data-baseweb="tab-list"] {
-            padding: 3px !important;
+        .app-subtitle {
+            font-size: 0.74rem !important;
+        }
+
+        /* Keep internal card rows, slot rows, and toolbar buttons inline instead of stacking into tall clutter */
+        div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) {
+            flex-wrap: nowrap !important;
+            gap: 6px !important;
+        }
+        div[data-testid="stHorizontalBlock"]:not(:has(div[data-testid="stVerticalBlockBorderWrapper"])) > div[data-testid="stColumn"] {
+            min-width: 0 !important;
+        }
+
+        div[data-testid="stRadio"] > div[role="radiogroup"] {
+            padding: 4px !important;
             gap: 4px !important;
+            margin-bottom: 12px !important;
         }
 
-        .stTabs [data-baseweb="tab"] {
-            height: 34px !important;
-            font-size: 0.76rem !important;
-            padding: 4px 10px !important;
+        div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+            padding: 6px 10px !important;
+        }
+
+        div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
+            font-size: 0.75rem !important;
         }
 
         div[data-testid="stVerticalBlockBorderWrapper"] {
-            padding: 12px 14px !important;
-            margin-bottom: 12px !important;
+            padding: 12px 13px !important;
+            margin-bottom: 10px !important;
             border-radius: 12px !important;
         }
 
         .stButton button {
-            padding: 4px 8px !important;
-            font-size: 0.78rem !important;
+            padding: 4px 6px !important;
+            font-size: 0.74rem !important;
+            min-height: 32px !important;
+        }
+
+        .ai-day-card {
+            padding: 12px !important;
+            margin-bottom: 10px !important;
         }
 
         .ai-day-header {
-            flex-direction: column;
-            align-items: flex-start;
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
             gap: 4px;
         }
 
         .day-time-badge {
-            font-size: 0.72rem;
-            padding: 2px 8px;
+            font-size: 0.70rem;
+            padding: 2px 7px;
         }
 
         .date-banner {
-            padding: 8px 12px !important;
-            font-size: 0.78rem !important;
-            margin-bottom: 14px !important;
+            padding: 7px 10px !important;
+            font-size: 0.75rem !important;
+            margin-bottom: 10px !important;
         }
     }
     </style>
@@ -321,13 +344,24 @@ st.markdown(
 
 
 # -----------------------
-# Streamlit Helpers & Dialog Decorator
+# Streamlit Decorators (@st.fragment, @st.dialog & Rerun Helpers)
 # -----------------------
 def safe_rerun() -> None:
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
+
+
+if hasattr(st, "fragment"):
+    fragment_decorator = st.fragment
+elif hasattr(st, "experimental_fragment"):
+    fragment_decorator = st.experimental_fragment
+else:
+    def fragment_decorator(func=None, **kwargs):
+        if func is None:
+            return lambda f: f
+        return func
 
 
 if hasattr(st, "dialog"):
@@ -351,9 +385,17 @@ PRIORITY_OPTIONS = ["Low", "Medium", "High"]
 PRIORITY_SYSTEM_MODES = ["Low / Medium / High", "1 to 10 Scale (Slider)", "Both Systems"]
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+SYSTEM_TITLES = {
+    "__SYSTEM_COURSES__",
+    "__SYSTEM_SCHEDULE__",
+    "__SYSTEM_PRIO_CONFIG__",
+    "__SYSTEM_MAX_WORK_CONFIG__",
+    "__SYSTEM_COMPLETED_SLOTS__",
+}
+
 
 # -----------------------
-# Database Engine Initialization
+# Database Engine & Thread-Safe Background Worker
 # -----------------------
 def get_connection_url() -> str:
     url = ""
@@ -372,13 +414,33 @@ def get_connection_url() -> str:
 @st.cache_resource
 def get_db_engine():
     db_url = get_connection_url()
-    return create_engine(db_url, pool_pre_ping=True)
+    return create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+
+
+@st.cache_resource
+def get_db_write_lock() -> threading.Lock:
+    return threading.Lock()
 
 
 engine = get_db_engine()
+db_write_lock = get_db_write_lock()
 
 
-def init_db():
+def _run_bg_sql(worker_fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+    """Executes database writes asynchronously on a daemon thread so UI never freezes."""
+    def _target():
+        with db_write_lock:
+            try:
+                worker_fn(*args, **kwargs)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+
+
+@st.cache_resource
+def init_db_once():
     sql_users = text("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -405,10 +467,11 @@ def init_db():
     with engine.begin() as conn:
         conn.execute(sql_users)
         conn.execute(sql_assignments)
+    return True
 
 
 try:
-    init_db()
+    init_db_once()
 except Exception as e:
     st.error(f"Database Connection Error: {e}")
 
@@ -445,7 +508,7 @@ def get_course_badge_html(course_name: str) -> str:
     else:
         bg, fg, border = "#0c4a6e", "#7dd3fc", "#0284c7"
 
-    return f"<span style='background-color:{bg}; color:{fg}; border:1px solid {border}; padding:3px 10px; border-radius:6px; font-weight:700; font-size:0.75rem; letter-spacing:0.03em; display:inline-block;'>{c}</span>"
+    return f"<span style='background-color:{bg}; color:{fg}; border:1px solid {border}; padding:3px 9px; border-radius:6px; font-weight:700; font-size:0.73rem; letter-spacing:0.03em; display:inline-block;'>{c}</span>"
 
 
 def priority_to_label(val: Any) -> str:
@@ -566,251 +629,46 @@ def _hash_pw(password: str) -> str:
 
 
 # -----------------------
-# System Config CRUD Handlers
+# Single-Query Hydration & Background DB Writers
 # -----------------------
-def _read_courses_file(user_id: str) -> List[str]:
-    cfg_id = get_courses_config_id(user_id)
-    sql = text("SELECT notes FROM assignments WHERE id = :id AND user_id = :uid")
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"id": cfg_id, "uid": user_id}).fetchone()
-        if row and row.notes:
-            try:
-                parsed = json.loads(row.notes)
-                if isinstance(parsed, list):
-                    return parsed
-            except Exception:
-                pass
-    return []
+def clear_all_session_caches():
+    for k in [
+        "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
+        "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
+        "_ai_plan_result", "_undo_slot_state", "_hydrated_uid"
+    ]:
+        if k in st.session_state:
+            del st.session_state[k]
 
 
-def _write_courses_file(user_id: str, courses: List[str]) -> None:
-    if not user_id:
+def _db_purge_ids_worker(user_id: str, expired_ids: List[str]) -> None:
+    if not expired_ids:
         return
-    cfg_id = get_courses_config_id(user_id)
+    sql = text("DELETE FROM assignments WHERE user_id = :uid AND id = :id")
+    with engine.begin() as conn:
+        for aid in expired_ids:
+            conn.execute(sql, {"uid": user_id, "id": aid})
+
+
+def _db_upsert_config_worker(cfg_id: str, user_id: str, sys_title: str, notes_payload: str, created_at: str) -> None:
     sql = text("""
         INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
-        VALUES (:id, :user_id, '__SYSTEM_COURSES__', 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
+        VALUES (:id, :user_id, :title, 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
         ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
     """)
     with engine.begin() as conn:
         conn.execute(sql, {
             "id": cfg_id,
             "user_id": user_id,
-            "notes": json.dumps(courses),
-            "created_at": get_local_now().isoformat()
+            "title": sys_title,
+            "notes": notes_payload,
+            "created_at": created_at,
         })
 
 
-def _read_schedule_file(user_id: str) -> List[Dict[str, Any]]:
-    cfg_id = get_schedule_config_id(user_id)
-    sql = text("SELECT notes FROM assignments WHERE id = :id AND user_id = :uid")
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"id": cfg_id, "uid": user_id}).fetchone()
-        if row and row.notes:
-            try:
-                parsed = json.loads(row.notes)
-                if isinstance(parsed, list):
-                    return parsed
-            except Exception:
-                pass
-    return []
-
-
-def _write_schedule_file(user_id: str, schedule: List[Dict[str, Any]]) -> None:
-    if not user_id:
+def _db_upsert_assignments_worker(db_rows: List[Dict[str, Any]]) -> None:
+    if not db_rows:
         return
-    cfg_id = get_schedule_config_id(user_id)
-    sql = text("""
-        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
-        VALUES (:id, :user_id, '__SYSTEM_SCHEDULE__', 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
-        ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, {
-            "id": cfg_id,
-            "user_id": user_id,
-            "notes": json.dumps(schedule),
-            "created_at": get_local_now().isoformat()
-        })
-
-
-def _read_prio_config(user_id: str) -> Optional[str]:
-    cfg_id = get_prio_config_id(user_id)
-    sql = text("SELECT notes FROM assignments WHERE id = :id AND user_id = :uid")
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"id": cfg_id, "uid": user_id}).fetchone()
-        if row and row.notes:
-            mode_val = str(row.notes).strip()
-            if mode_val in PRIORITY_SYSTEM_MODES:
-                return mode_val
-    return None
-
-
-def _write_prio_config(user_id: str, mode: str) -> None:
-    if not user_id or mode not in PRIORITY_SYSTEM_MODES:
-        return
-    cfg_id = get_prio_config_id(user_id)
-    sql = text("""
-        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
-        VALUES (:id, :user_id, '__SYSTEM_PRIO_CONFIG__', 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
-        ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, {
-            "id": cfg_id,
-            "user_id": user_id,
-            "notes": mode,
-            "created_at": get_local_now().isoformat()
-        })
-
-
-def _read_max_work_config(user_id: str) -> Dict[str, int]:
-    cfg_id = get_max_work_config_id(user_id)
-    sql = text("SELECT notes FROM assignments WHERE id = :id AND user_id = :uid")
-    default_dict = {d: 60 for d in DAYS_OF_WEEK}
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"id": cfg_id, "uid": user_id}).fetchone()
-        if row and row.notes:
-            try:
-                parsed = json.loads(row.notes)
-                if isinstance(parsed, dict):
-                    for d in DAYS_OF_WEEK:
-                        if d in parsed and isinstance(parsed[d], int):
-                            default_dict[d] = parsed[d]
-                    return default_dict
-                elif isinstance(parsed, int) or str(row.notes).strip().isdigit():
-                    val = int(str(row.notes).strip())
-                    return {d: val for d in DAYS_OF_WEEK}
-            except Exception:
-                pass
-    return default_dict
-
-
-def _write_max_work_config(user_id: str, max_mins_dict: Dict[str, int]) -> None:
-    if not user_id:
-        return
-    cfg_id = get_max_work_config_id(user_id)
-    sql = text("""
-        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
-        VALUES (:id, :user_id, '__SYSTEM_MAX_WORK_CONFIG__', 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
-        ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, {
-            "id": cfg_id,
-            "user_id": user_id,
-            "notes": json.dumps(max_mins_dict),
-            "created_at": get_local_now().isoformat()
-        })
-
-
-def _read_completed_slots(user_id: str) -> Dict[str, Dict[str, Any]]:
-    cfg_id = get_completed_slots_config_id(user_id)
-    sql = text("SELECT notes FROM assignments WHERE id = :id AND user_id = :uid")
-    today_str = get_local_now().date().isoformat()
-
-    with engine.connect() as conn:
-        row = conn.execute(sql, {"id": cfg_id, "uid": user_id}).fetchone()
-        if row and row.notes:
-            try:
-                parsed = json.loads(row.notes)
-                if isinstance(parsed, dict):
-                    today_data = parsed.get(today_str, {})
-                    if isinstance(today_data, dict):
-                        return today_data
-            except Exception:
-                pass
-    return {}
-
-
-def _write_completed_slots(user_id: str, today_slots: Dict[str, Dict[str, Any]]) -> None:
-    if not user_id:
-        return
-    cfg_id = get_completed_slots_config_id(user_id)
-    today_str = get_local_now().date().isoformat()
-    payload = {today_str: today_slots}
-
-    sql = text("""
-        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
-        VALUES (:id, :user_id, '__SYSTEM_COMPLETED_SLOTS__', 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
-        ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, {
-            "id": cfg_id,
-            "user_id": user_id,
-            "notes": json.dumps(payload),
-            "created_at": get_local_now().isoformat()
-        })
-
-
-# -----------------------
-# Database CRUD Operations & Auto-Purge
-# -----------------------
-def invalidate_cache():
-    if "df_cached" in st.session_state:
-        del st.session_state["df_cached"]
-
-
-def fetch_assignments(user_id: str) -> pd.DataFrame:
-    today_iso = get_local_now().date().isoformat()
-
-    sql_purge_expired = text("""
-        DELETE FROM assignments
-        WHERE user_id = :uid
-          AND status = 'Done'
-          AND due_date IS NOT NULL
-          AND due_date != ''
-          AND due_date < :today_iso;
-    """)
-
-    sql_fetch = text("""
-        SELECT * FROM assignments 
-        WHERE user_id = :uid 
-          AND title NOT IN (
-            '__SYSTEM_COURSES__', 
-            '__SYSTEM_SCHEDULE__', 
-            '__SYSTEM_PRIO_CONFIG__', 
-            '__SYSTEM_MAX_WORK_CONFIG__', 
-            '__SYSTEM_COMPLETED_SLOTS__'
-          )
-    """)
-
-    with engine.begin() as conn:
-        conn.execute(sql_purge_expired, {"uid": user_id, "today_iso": today_iso})
-        df = pd.read_sql(sql_fetch, conn, params={"uid": user_id})
-
-    if df.empty:
-        return pd.DataFrame(columns=[
-            "id", "user_id", "title", "course", "due_date", "status", "priority",
-            "atype", "eta", "created_at", "notes", "prev_status"
-        ])
-
-    rows = []
-    for _, r in df.iterrows():
-        n_text, prev_st = _unpack_notes(r.get("notes"))
-        rows.append({
-            "id": str(r.get("id")),
-            "user_id": str(r.get("user_id")),
-            "title": str(r.get("title") or ""),
-            "course": str(r.get("course") or "GENERAL").strip().upper(),
-            "due_date": str(r.get("due_date") or ""),
-            "status": str(r.get("status") or "Not Started"),
-            "priority": priority_to_int(r.get("priority")),
-            "atype": str(r.get("atype") or "Homework"),
-            "eta": str(r.get("eta") or ""),
-            "created_at": str(r.get("created_at") or ""),
-            "notes": n_text,
-            "prev_status": prev_st
-        })
-
-    return pd.DataFrame(rows)
-
-
-def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
-    if not rows_to_upsert:
-        return
-
     sql = text("""
         INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
         VALUES (:id, :user_id, :title, :course, :due_date, :status, :priority, :atype, :eta, :notes, :created_at)
@@ -826,35 +684,294 @@ def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
             notes = EXCLUDED.notes,
             created_at = EXCLUDED.created_at;
     """)
-
     with engine.begin() as conn:
-        for row in rows_to_upsert:
-            n_text = str(row.get("notes", "")).strip()
-            prev_st = str(row.get("prev_status", "Not Started"))
-            packed = _pack_notes(n_text, prev_st)
-
-            conn.execute(sql, {
-                "id": str(row.get("id")),
-                "user_id": str(row.get("user_id")),
-                "title": str(row.get("title", "")).strip() or "Untitled Assignment",
-                "course": str(row.get("course", "GENERAL")).strip().upper(),
-                "due_date": str(row.get("due_date") or ""),
-                "status": str(row.get("status", "Not Started")),
-                "priority": priority_to_int(row.get("priority")),
-                "atype": str(row.get("atype", "Homework")),
-                "eta": str(row.get("eta", "")).strip(),
-                "notes": packed,
-                "created_at": str(row.get("created_at") or get_local_now().isoformat())
-            })
-
-    invalidate_cache()
+        for row in db_rows:
+            conn.execute(sql, row)
 
 
-def delete_assignment(assignment_id: str) -> None:
+def _db_delete_assignment_worker(assignment_id: str) -> None:
     sql = text("DELETE FROM assignments WHERE id = :id")
     with engine.begin() as conn:
         conn.execute(sql, {"id": assignment_id})
-    invalidate_cache()
+
+
+def hydrate_user_session(user_id: str, force: bool = False) -> None:
+    """Loads ALL assignments + user settings in ONE single database query."""
+    if not force and st.session_state.get("_hydrated_uid") == user_id:
+        return
+
+    today_iso = get_local_now().date().isoformat()
+    sql_all = text("SELECT * FROM assignments WHERE user_id = :uid")
+
+    with engine.connect() as conn:
+        raw_rows = conn.execute(sql_all, {"uid": user_id}).mappings().all()
+
+    courses: List[str] = []
+    schedule: List[Dict[str, Any]] = []
+    prio_mode: Optional[str] = None
+    max_work: Dict[str, int] = {d: 60 for d in DAYS_OF_WEEK}
+    completed_slots: Dict[str, Dict[str, Any]] = {}
+
+    assignment_rows: List[Dict[str, Any]] = []
+    expired_done_ids: List[str] = []
+
+    for r in raw_rows:
+        r_title = str(r.get("title") or "")
+        r_notes = r.get("notes")
+
+        if r_title == "__SYSTEM_COURSES__":
+            try:
+                parsed = json.loads(str(r_notes or "[]"))
+                if isinstance(parsed, list):
+                    courses = parsed
+            except Exception:
+                pass
+        elif r_title == "__SYSTEM_SCHEDULE__":
+            try:
+                parsed = json.loads(str(r_notes or "[]"))
+                if isinstance(parsed, list):
+                    schedule = parsed
+            except Exception:
+                pass
+        elif r_title == "__SYSTEM_PRIO_CONFIG__":
+            val = str(r_notes or "").strip()
+            if val in PRIORITY_SYSTEM_MODES:
+                prio_mode = val
+        elif r_title == "__SYSTEM_MAX_WORK_CONFIG__":
+            try:
+                parsed = json.loads(str(r_notes or "{}"))
+                if isinstance(parsed, dict):
+                    for d in DAYS_OF_WEEK:
+                        if d in parsed and isinstance(parsed[d], int):
+                            max_work[d] = parsed[d]
+                elif isinstance(parsed, int) or str(r_notes or "").strip().isdigit():
+                    val = int(str(r_notes).strip())
+                    max_work = {d: val for d in DAYS_OF_WEEK}
+            except Exception:
+                pass
+        elif r_title == "__SYSTEM_COMPLETED_SLOTS__":
+            try:
+                parsed = json.loads(str(r_notes or "{}"))
+                if isinstance(parsed, dict):
+                    today_data = parsed.get(today_iso, {})
+                    if isinstance(today_data, dict):
+                        completed_slots = today_data
+            except Exception:
+                pass
+        elif r_title not in SYSTEM_TITLES:
+            status_val = str(r.get("status") or "Not Started")
+            due_val = str(r.get("due_date") or "")
+            aid_val = str(r.get("id"))
+
+            if status_val == "Done" and due_val and due_val < today_iso:
+                expired_done_ids.append(aid_val)
+                continue
+
+            n_text, prev_st = _unpack_notes(r_notes)
+            assignment_rows.append({
+                "id": aid_val,
+                "user_id": str(r.get("user_id")),
+                "title": r_title,
+                "course": str(r.get("course") or "GENERAL").strip().upper(),
+                "due_date": due_val,
+                "status": status_val,
+                "priority": priority_to_int(r.get("priority")),
+                "atype": str(r.get("atype") or "Homework"),
+                "eta": str(r.get("eta") or ""),
+                "created_at": str(r.get("created_at") or ""),
+                "notes": n_text,
+                "prev_status": prev_st,
+            })
+
+    if expired_done_ids:
+        _run_bg_sql(_db_purge_ids_worker, user_id, expired_done_ids)
+
+    if assignment_rows:
+        df_res = pd.DataFrame(assignment_rows)
+    else:
+        df_res = pd.DataFrame(columns=[
+            "id", "user_id", "title", "course", "due_date", "status", "priority",
+            "atype", "eta", "created_at", "notes", "prev_status"
+        ])
+
+    st.session_state["df_cached"] = df_res
+    st.session_state["cfg_courses"] = courses
+    st.session_state["cfg_schedule"] = schedule
+    st.session_state["cfg_prio_mode"] = prio_mode
+    st.session_state["cfg_max_work"] = max_work
+    st.session_state["cfg_completed_slots"] = completed_slots
+    st.session_state["cfg_completed_slots_date"] = today_iso
+    st.session_state["_hydrated_uid"] = user_id
+
+
+# -----------------------
+# Instant In-Memory Getters & Optimistic Writers
+# -----------------------
+def get_courses_cached(user_id: str) -> List[str]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_courses", [])
+
+
+def _write_courses_file(user_id: str, courses: List[str]) -> None:
+    if not user_id:
+        return
+    st.session_state["cfg_courses"] = courses
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_courses_config_id(user_id),
+        user_id,
+        "__SYSTEM_COURSES__",
+        json.dumps(courses),
+        get_local_now().isoformat(),
+    )
+
+
+def get_schedule_cached(user_id: str) -> List[Dict[str, Any]]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_schedule", [])
+
+
+def _write_schedule_file(user_id: str, schedule: List[Dict[str, Any]]) -> None:
+    if not user_id:
+        return
+    st.session_state["cfg_schedule"] = schedule
+    if "_ai_plan_result" in st.session_state:
+        del st.session_state["_ai_plan_result"]
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_schedule_config_id(user_id),
+        user_id,
+        "__SYSTEM_SCHEDULE__",
+        json.dumps(schedule),
+        get_local_now().isoformat(),
+    )
+
+
+def get_prio_cached(user_id: str) -> Optional[str]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_prio_mode")
+
+
+def _write_prio_config(user_id: str, mode: str) -> None:
+    if not user_id or mode not in PRIORITY_SYSTEM_MODES:
+        return
+    st.session_state["cfg_prio_mode"] = mode
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_prio_config_id(user_id),
+        user_id,
+        "__SYSTEM_PRIO_CONFIG__",
+        mode,
+        get_local_now().isoformat(),
+    )
+
+
+def get_max_work_cached(user_id: str) -> Dict[str, int]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_max_work", {d: 60 for d in DAYS_OF_WEEK})
+
+
+def _write_max_work_config(user_id: str, max_mins_dict: Dict[str, int]) -> None:
+    if not user_id:
+        return
+    st.session_state["cfg_max_work"] = max_mins_dict
+    if "_ai_plan_result" in st.session_state:
+        del st.session_state["_ai_plan_result"]
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_max_work_config_id(user_id),
+        user_id,
+        "__SYSTEM_MAX_WORK_CONFIG__",
+        json.dumps(max_mins_dict),
+        get_local_now().isoformat(),
+    )
+
+
+def get_completed_slots_cached(user_id: str) -> Dict[str, Dict[str, Any]]:
+    hydrate_user_session(user_id)
+    today_str = get_local_now().date().isoformat()
+    if st.session_state.get("cfg_completed_slots_date") != today_str:
+        st.session_state["cfg_completed_slots"] = {}
+        st.session_state["cfg_completed_slots_date"] = today_str
+    return st.session_state.get("cfg_completed_slots", {})
+
+
+def _write_completed_slots(user_id: str, today_slots: Dict[str, Dict[str, Any]]) -> None:
+    if not user_id:
+        return
+    today_str = get_local_now().date().isoformat()
+    st.session_state["cfg_completed_slots"] = today_slots
+    st.session_state["cfg_completed_slots_date"] = today_str
+    _run_bg_sql(
+        _db_upsert_config_worker,
+        get_completed_slots_config_id(user_id),
+        user_id,
+        "__SYSTEM_COMPLETED_SLOTS__",
+        json.dumps({today_str: today_slots}),
+        get_local_now().isoformat(),
+    )
+
+
+def get_assignments_cached(user_id: str) -> pd.DataFrame:
+    hydrate_user_session(user_id)
+    return st.session_state["df_cached"]
+
+
+def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
+    if not rows_to_upsert:
+        return
+
+    normalized_rows = []
+    db_payloads = []
+
+    for row in rows_to_upsert:
+        n_text = str(row.get("notes", "")).strip()
+        prev_st = str(row.get("prev_status", "Not Started"))
+        packed = _pack_notes(n_text, prev_st)
+
+        clean_row = {
+            "id": str(row.get("id")),
+            "user_id": str(row.get("user_id")),
+            "title": str(row.get("title", "")).strip() or "Untitled Assignment",
+            "course": str(row.get("course", "GENERAL")).strip().upper(),
+            "due_date": str(row.get("due_date") or ""),
+            "status": str(row.get("status", "Not Started")),
+            "priority": priority_to_int(row.get("priority")),
+            "atype": str(row.get("atype", "Homework")),
+            "eta": str(row.get("eta", "")).strip(),
+            "notes": n_text,
+            "created_at": str(row.get("created_at") or get_local_now().isoformat()),
+            "prev_status": prev_st,
+        }
+        normalized_rows.append(clean_row)
+        db_payloads.append({**clean_row, "notes": packed})
+
+    if "df_cached" in st.session_state:
+        df = st.session_state["df_cached"]
+        for c_row in normalized_rows:
+            if not df.empty and (df["id"] == c_row["id"]).any():
+                idx = df.index[df["id"] == c_row["id"]][0]
+                for col, val in c_row.items():
+                    df.at[idx, col] = val
+            else:
+                df = pd.concat([df, pd.DataFrame([c_row])], ignore_index=True)
+        st.session_state["df_cached"] = df
+
+    if "_ai_plan_result" in st.session_state:
+        del st.session_state["_ai_plan_result"]
+
+    _run_bg_sql(_db_upsert_assignments_worker, db_payloads)
+
+
+def delete_assignment(assignment_id: str) -> None:
+    if "df_cached" in st.session_state and not st.session_state["df_cached"].empty:
+        df = st.session_state["df_cached"]
+        st.session_state["df_cached"] = df[df["id"] != assignment_id].reset_index(drop=True)
+
+    if "_ai_plan_result" in st.session_state:
+        del st.session_state["_ai_plan_result"]
+
+    _run_bg_sql(_db_delete_assignment_worker, assignment_id)
 
 
 def restore_single_assignment(row_dict: Dict[str, Any]):
@@ -862,7 +979,7 @@ def restore_single_assignment(row_dict: Dict[str, Any]):
     prev_st = row_dict.get("prev_status") or "In Progress"
     if prev_st == "Done":
         prev_st = "In Progress"
-    
+
     row_dict["status"] = prev_st
     upsert_assignments([row_dict])
 
@@ -872,8 +989,6 @@ def restore_single_assignment(row_dict: Dict[str, Any]):
                 st.session_state[key] = False
             elif "status_sel" in key:
                 st.session_state[key] = prev_st
-
-    safe_rerun()
 
 
 # -----------------------
@@ -921,17 +1036,26 @@ def sign_in_user(email: str, password: str) -> Dict[str, Any]:
 
 
 def sign_out_user() -> None:
-    for key in ["user", "df_cached", "_ai_plan_result", "_undo_slot_state", "user_prio_mode"]:
-        if key in st.session_state:
-            del st.session_state[key]
+    clear_all_session_caches()
+    if "user" in st.session_state:
+        del st.session_state["user"]
     safe_rerun()
 
 
 # -----------------------
-# Real-Time Event Callbacks
+# Instant Fragment Callbacks (0ms UI latency)
 # -----------------------
-def on_checkbox_toggle(aid: str, row_dict: Dict[str, Any], chk_key: str, sel_key: str):
+def on_checkbox_toggle(aid: str, chk_key: str, sel_key: str):
     chk_val = st.session_state.get(chk_key, False)
+    df = st.session_state.get("df_cached")
+    if df is None or df.empty:
+        return
+
+    mask = df["id"] == aid
+    if not mask.any():
+        return
+
+    row_dict = df.loc[mask].iloc[0].to_dict()
     current_st = row_dict.get("status", "Not Started")
 
     if chk_val:
@@ -948,23 +1072,34 @@ def on_checkbox_toggle(aid: str, row_dict: Dict[str, Any], chk_key: str, sel_key
     row_dict["status"] = new_status
     st.session_state[sel_key] = new_status
     upsert_assignments([row_dict])
-    safe_rerun()
 
 
-def on_status_change(aid: str, row_dict: Dict[str, Any], sel_key: str, chk_key: str):
+def on_status_change(aid: str, sel_key: str, chk_key: str):
     new_status = st.session_state.get(sel_key)
-    if new_status:
-        if new_status != "Done":
-            row_dict["prev_status"] = new_status
-            st.session_state[f"prev_st_{aid}"] = new_status
-        row_dict["status"] = new_status
-        st.session_state[chk_key] = (new_status == "Done")
-        upsert_assignments([row_dict])
-        safe_rerun()
+    df = st.session_state.get("df_cached")
+    if not new_status or df is None or df.empty:
+        return
+
+    mask = df["id"] == aid
+    if not mask.any():
+        return
+
+    row_dict = df.loc[mask].iloc[0].to_dict()
+    if new_status != "Done":
+        row_dict["prev_status"] = new_status
+        st.session_state[f"prev_st_{aid}"] = new_status
+    row_dict["status"] = new_status
+    st.session_state[chk_key] = (new_status == "Done")
+    upsert_assignments([row_dict])
+
+
+def on_remove_schedule_block(user_id: str, block_id: str):
+    sched = [item for item in get_schedule_cached(user_id) if item.get("id") != block_id]
+    _write_schedule_file(user_id, sched)
 
 
 def on_daily_slot_check(slot_key: str, task_title: str, slot_dict: Dict[str, Any], user_id: str):
-    completed_today = _read_completed_slots(user_id)
+    completed_today = get_completed_slots_cached(user_id).copy()
     completed_today[slot_key] = slot_dict
     _write_completed_slots(user_id, completed_today)
 
@@ -980,7 +1115,7 @@ def on_undo_daily_slot(user_id: str):
     undo_info = st.session_state.get("_undo_slot_state")
     if undo_info:
         s_key = undo_info["slot_key"]
-        completed_today = _read_completed_slots(user_id)
+        completed_today = get_completed_slots_cached(user_id).copy()
         completed_today.pop(s_key, None)
         _write_completed_slots(user_id, completed_today)
 
@@ -991,14 +1126,13 @@ def on_undo_daily_slot(user_id: str):
 
 
 def restore_single_daily_slot(slot_key: str, user_id: str):
-    completed_today = _read_completed_slots(user_id)
+    completed_today = get_completed_slots_cached(user_id).copy()
     completed_today.pop(slot_key, None)
     _write_completed_slots(user_id, completed_today)
 
     for k in list(st.session_state.keys()):
         if slot_key in k:
             st.session_state[k] = False
-    safe_rerun()
 
 
 # -----------------------
@@ -1053,8 +1187,8 @@ def days_left(d: Optional[date]) -> Tuple[str, int]:
 # AI Time-Slot Scheduler Engine
 # -----------------------
 def generate_ai_study_plan(
-    df_tasks: pd.DataFrame, 
-    schedule: List[Dict[str, Any]], 
+    df_tasks: pd.DataFrame,
+    schedule: List[Dict[str, Any]],
     max_daily_mins_config: Dict[str, int] | int = 60
 ) -> Dict[str, Any]:
     if df_tasks.empty:
@@ -1270,107 +1404,19 @@ def render_terminal_auth_page():
                         if "error" in res:
                             st.error(f"Sign in failed: {res['error']}")
                         else:
+                            clear_all_session_caches()
                             st.session_state.user = res["data"]
                             u_id = res["data"]["id"]
-                            invalidate_cache()
-                            if not _read_courses_file(u_id):
+                            # Single SQL query loads everything before clearing auth screen
+                            hydrate_user_session(u_id, force=True)
+                            if not get_courses_cached(u_id):
                                 st.session_state["_show_welcome_courses_modal"] = True
-                            if not _read_prio_config(u_id):
+                            if not get_prio_cached(u_id):
                                 st.session_state["_show_prio_config_modal"] = True
                             auth_container.empty()
                             safe_rerun()
 
             st.markdown('</div>', unsafe_allow_html=True)
-
-
-# -----------------------
-# Responsive Mobile-Friendly Grid Renderer
-# -----------------------
-def render_assignment_grid(df_grid: pd.DataFrame, user_prio_mode: str, key_prefix: str = "reg_"):
-    if df_grid.empty:
-        st.markdown("<div style='padding:50px 0; text-align:center; color:#475569; font-size:0.9rem;'>No active assignments in this view.</div>", unsafe_allow_html=True)
-        return
-
-    df_sorted = df_grid.copy()
-    df_sorted["due_parsed"] = df_sorted["due_date"].apply(parse_date_iso_or_empty)
-    df_sorted = df_sorted.sort_values(by=["due_parsed", "priority"], ascending=[True, False]).drop(columns=["due_parsed"])
-
-    cards_per_row = 3
-    chunked_rows = [df_sorted.iloc[i:i + cards_per_row] for i in range(0, len(df_sorted), cards_per_row)]
-
-    for row_df in chunked_rows:
-        cols = st.columns(cards_per_row)
-        for idx, (_, row) in enumerate(row_df.iterrows()):
-            with cols[idx]:
-                with st.container(border=True):
-                    aid = row.get("id")
-                    title = row.get("title") or "Untitled"
-                    course = (row.get("course") or "MATH").upper()
-                    atype = row.get("atype") or "Homework"
-                    due_d = parse_date_iso_or_empty(row.get("due_date"))
-                    due_text = format_mdy(due_d)
-                    days_text, _ = days_left(due_d)
-
-                    chk_key = f"{key_prefix}chk_done_{aid}"
-                    sel_key = f"{key_prefix}status_sel_{aid}"
-
-                    status = st.session_state.get(sel_key) or row.get("status") or "Not Started"
-                    prio_num = priority_to_int(row.get("priority"))
-                    prio_label = priority_to_label(prio_num)
-                    prio_cls = f"prio-{prio_label.lower()}"
-                    prio_display_str = format_priority_display(prio_num, user_prio_mode)
-                    row_dict = row.to_dict()
-
-                    # Row 1: Checkbox, Course Badge & Edit Action (Clean wrap for phone portrait)
-                    c_top_a, c_top_b, c_top_c = st.columns([0.6, 3.4, 1.2])
-
-                    with c_top_a:
-                        st.checkbox(
-                            "Done",
-                            value=(status == "Done"),
-                            key=chk_key,
-                            label_visibility="collapsed",
-                            on_change=on_checkbox_toggle,
-                            args=(aid, row_dict, chk_key, sel_key)
-                        )
-
-                    with c_top_b:
-                        st.markdown(get_course_badge_html(course), unsafe_allow_html=True)
-
-                    with c_top_c:
-                        if st.button("Edit", key=f"{key_prefix}edit_btn_{aid}"):
-                            st.session_state["_edit_assignment_id"] = aid
-                            safe_rerun()
-
-                    # Row 2: Dedicated Status Selector (Legible on mobile screens)
-                    st.selectbox(
-                        "Status",
-                        STATUS_OPTIONS,
-                        index=STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0,
-                        key=sel_key,
-                        label_visibility="collapsed",
-                        on_change=on_status_change,
-                        args=(aid, row_dict, sel_key, chk_key)
-                    )
-
-                    st.markdown(f"<div style='font-size:1.15rem; font-weight:700; color:#f8fafc; margin-top:8px;'>{title}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='color:#64748b; font-size:0.8rem; margin-top:2px; margin-bottom:12px;'>{atype}</div>", unsafe_allow_html=True)
-
-                    eta = str(row.get("eta") or "").strip()
-                    notes = str(row.get("notes") or "").strip()
-                    eta_snippet = f" &bull; Est: {eta}" if eta else ""
-
-                    st.markdown(
-                        f"<div style='display:flex; align-items:center; justify-content:space-between; margin-top:10px; margin-bottom:12px; padding-top:10px; border-top:1px solid rgba(255, 255, 255, 0.08);'>"
-                        f"<div style='font-size:0.78rem; color:#94a3b8;'>Due {due_text} <span style='color:#64748b;'>({days_text})</span>{eta_snippet}</div>"
-                        f"<div class='{prio_cls}'>Priority: {prio_display_str}</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-
-                    if notes:
-                        note_preview = notes if len(notes) <= 90 else notes[:87] + "..."
-                        st.markdown(f"<div style='font-size:0.75rem; color:#64748b; margin-top:4px; margin-bottom:8px;'>Note: {note_preview}</div>", unsafe_allow_html=True)
 
 
 # -----------------------
@@ -1400,7 +1446,7 @@ def show_prio_config_dialog(user_id: str):
     st.markdown("### How would you like to view & set task priorities?")
     st.write("You can update this setting anytime from the toolbar.")
 
-    current_mode = _read_prio_config(user_id) or "Low / Medium / High"
+    current_mode = get_prio_cached(user_id) or "Low / Medium / High"
     prio_choice = st.radio(
         "Select System Preference:",
         PRIORITY_SYSTEM_MODES,
@@ -1410,16 +1456,14 @@ def show_prio_config_dialog(user_id: str):
 
     if st.button("Save Preference", key="save_prio_choice_btn"):
         _write_prio_config(user_id, prio_choice)
-        st.session_state["user_prio_mode"] = prio_choice
         safe_rerun()
 
 
 @dialog_decorator("Create New Assignment")
 def show_add_assignment_dialog(user_id: str, prio_mode: str):
-    st.session_state["_open_add_modal"] = False
-    courses = _read_courses_file(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
     if "OTHER" not in courses:
-        courses.append("OTHER")
+        courses = courses + ["OTHER"]
 
     with st.form("add_assignment_form"):
         title = st.text_input("Assignment Title", key="add_title")
@@ -1454,7 +1498,7 @@ def show_add_assignment_dialog(user_id: str, prio_mode: str):
                 "user_id": user_id,
                 "title": title.strip() or "Untitled Assignment",
                 "course": course_val.strip(),
-                "due_date": due.isoformat() if isinstance(due, date) else None,
+                "due_date": due.isoformat() if isinstance(due, date) else "",
                 "status": status,
                 "priority": prio_val_to_save,
                 "atype": atype,
@@ -1465,7 +1509,7 @@ def show_add_assignment_dialog(user_id: str, prio_mode: str):
             }
             upsert_assignments([new_row])
             if course_free.strip():
-                c_list = _read_courses_file(user_id)
+                c_list = list(get_courses_cached(user_id))
                 if course_free.strip().upper() not in c_list:
                     c_list.append(course_free.strip().upper())
                     _write_courses_file(user_id, c_list)
@@ -1474,19 +1518,17 @@ def show_add_assignment_dialog(user_id: str, prio_mode: str):
 
 @dialog_decorator("Edit Assignment Details")
 def show_edit_assignment_dialog(user_id: str, aid: str, prio_mode: str):
-    df_current = fetch_assignments(user_id)
+    df_current = get_assignments_cached(user_id)
     assignment = df_current[df_current["id"] == aid].to_dict(orient="records") if not df_current.empty else []
     assignment_record = assignment[0] if assignment else None
 
     if not assignment_record:
-        st.session_state["_edit_assignment_id"] = ""
         st.warning("Assignment no longer exists.")
         return
 
-    st.session_state["_edit_assignment_id"] = ""
-    courses = _read_courses_file(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
     if "OTHER" not in courses:
-        courses.append("OTHER")
+        courses = courses + ["OTHER"]
 
     with st.form("edit_assignment_form"):
         title = st.text_input("Assignment Title", value=assignment_record.get("title", ""), key=f"edit_title_{aid}")
@@ -1544,7 +1586,7 @@ def show_edit_assignment_dialog(user_id: str, aid: str, prio_mode: str):
                 "user_id": user_id,
                 "title": title.strip(),
                 "course": course_val.strip(),
-                "due_date": due.isoformat() if isinstance(due, date) else None,
+                "due_date": due.isoformat() if isinstance(due, date) else "",
                 "status": status,
                 "priority": prio_val_to_save,
                 "atype": atype,
@@ -1563,8 +1605,7 @@ def show_edit_assignment_dialog(user_id: str, aid: str, prio_mode: str):
 
 @dialog_decorator("Manage Courses")
 def show_manage_courses_dialog(user_id: str):
-    st.session_state["_open_manage_courses"] = False
-    courses = _read_courses_file(user_id)
+    courses = list(get_courses_cached(user_id))
     to_remove = []
 
     if courses:
@@ -1592,222 +1633,140 @@ def show_manage_courses_dialog(user_id: str):
 
 
 # -----------------------
-# Auth Session Control & Preferences
+# Isolated @st.fragment Workspaces (Zero Full-Page Reloads)
 # -----------------------
-user = st.session_state.get("user")
+@fragment_decorator
+def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mode: str, key_prefix: str):
+    df_all = get_assignments_cached(user_id)
 
-if not user:
-    render_terminal_auth_page()
-    st.stop()
+    if view_filter == "regular":
+        df_grid = df_all[
+            (df_all["status"] != "Done") &
+            (df_all["atype"] != "Test & Quizzes") &
+            (df_all["atype"] != "Other") &
+            (df_all["course"] != "OTHER")
+        ]
+    elif view_filter == "tests":
+        df_grid = df_all[
+            (df_all["status"] != "Done") &
+            (df_all["atype"] == "Test & Quizzes")
+        ]
+    else:
+        df_grid = df_all[
+            (df_all["status"] != "Done") &
+            ((df_all["atype"] == "Other") | (df_all["course"] == "OTHER"))
+        ]
 
-user_id = str(user.get("id"))
-email = str(user.get("email", "User"))
+    if df_grid.empty:
+        st.markdown("<div style='padding:45px 0; text-align:center; color:#475569; font-size:0.9rem;'>No active assignments in this view.</div>", unsafe_allow_html=True)
+        return
 
-active_prio_mode = _read_prio_config(user_id)
-stored_max_daily_work_dict = _read_max_work_config(user_id)
+    df_sorted = df_grid.copy()
+    df_sorted["due_parsed"] = df_sorted["due_date"].apply(parse_date_iso_or_empty)
+    df_sorted = df_sorted.sort_values(by=["due_parsed", "priority"], ascending=[True, False]).drop(columns=["due_parsed"])
 
-if not _read_courses_file(user_id) and "_show_welcome_courses_modal" not in st.session_state:
-    st.session_state["_show_welcome_courses_modal"] = True
+    cards_per_row = 3
+    chunked_rows = [df_sorted.iloc[i:i + cards_per_row] for i in range(0, len(df_sorted), cards_per_row)]
 
-if not active_prio_mode and "_show_prio_config_modal" not in st.session_state:
-    st.session_state["_show_prio_config_modal"] = True
+    for row_df in chunked_rows:
+        cols = st.columns(cards_per_row)
+        for idx, (_, row) in enumerate(row_df.iterrows()):
+            with cols[idx]:
+                with st.container(border=True):
+                    aid = row.get("id")
+                    title = row.get("title") or "Untitled"
+                    course = (row.get("course") or "MATH").upper()
+                    atype = row.get("atype") or "Homework"
+                    due_d = parse_date_iso_or_empty(row.get("due_date"))
+                    due_text = format_mdy(due_d)
+                    days_text, _ = days_left(due_d)
 
-user_prio_mode = active_prio_mode or "Low / Medium / High"
+                    chk_key = f"{key_prefix}chk_done_{aid}"
+                    sel_key = f"{key_prefix}status_sel_{aid}"
 
-# State Modal Launchers
-if "_open_add_modal" not in st.session_state:
-    st.session_state["_open_add_modal"] = False
-if "_open_manage_courses" not in st.session_state:
-    st.session_state["_open_manage_courses"] = False
-if "_show_prio_config_modal" not in st.session_state:
-    st.session_state["_show_prio_config_modal"] = False
-if "_edit_assignment_id" not in st.session_state:
-    st.session_state["_edit_assignment_id"] = ""
+                    status = st.session_state.get(sel_key) or row.get("status") or "Not Started"
+                    prio_num = priority_to_int(row.get("priority"))
+                    prio_label = priority_to_label(prio_num)
+                    prio_cls = f"prio-{prio_label.lower()}"
+                    prio_display_str = format_priority_display(prio_num, user_prio_mode)
 
-if st.session_state.get("_show_welcome_courses_modal", False):
-    show_welcome_courses_dialog(user_id)
+                    # Row 1: Checkbox, Course Badge & Edit Action (Stays inline on phone portrait)
+                    c_top_a, c_top_b, c_top_c = st.columns([0.55, 3.45, 1.2])
 
-if st.session_state.get("_show_prio_config_modal", False):
-    show_prio_config_dialog(user_id)
+                    with c_top_a:
+                        st.checkbox(
+                            "Done",
+                            value=(status == "Done"),
+                            key=chk_key,
+                            label_visibility="collapsed",
+                            on_change=on_checkbox_toggle,
+                            args=(aid, chk_key, sel_key)
+                        )
 
-if st.session_state.get("_open_add_modal", False):
-    show_add_assignment_dialog(user_id, user_prio_mode)
+                    with c_top_b:
+                        st.markdown(get_course_badge_html(course), unsafe_allow_html=True)
 
-if st.session_state.get("_edit_assignment_id"):
-    show_edit_assignment_dialog(user_id, st.session_state["_edit_assignment_id"], user_prio_mode)
+                    with c_top_c:
+                        if st.button("Edit", key=f"{key_prefix}edit_btn_{aid}", use_container_width=True):
+                            show_edit_assignment_dialog(user_id, aid, user_prio_mode)
 
-if st.session_state.get("_open_manage_courses", False):
-    show_manage_courses_dialog(user_id)
+                    # Row 2: Dedicated Status Selector
+                    st.selectbox(
+                        "Status",
+                        STATUS_OPTIONS,
+                        index=STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0,
+                        key=sel_key,
+                        label_visibility="collapsed",
+                        on_change=on_status_change,
+                        args=(aid, sel_key, chk_key)
+                    )
+
+                    st.markdown(f"<div style='font-size:1.1rem; font-weight:700; color:#f8fafc; margin-top:6px;'>{title}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='color:#64748b; font-size:0.78rem; margin-top:1px; margin-bottom:10px;'>{atype}</div>", unsafe_allow_html=True)
+
+                    eta = str(row.get("eta") or "").strip()
+                    notes = str(row.get("notes") or "").strip()
+                    eta_snippet = f" &bull; Est: {eta}" if eta else ""
+
+                    st.markdown(
+                        f"<div style='display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255, 255, 255, 0.08);'>"
+                        f"<div style='font-size:0.76rem; color:#94a3b8;'>Due {due_text} <span style='color:#64748b;'>({days_text})</span>{eta_snippet}</div>"
+                        f"<div class='{prio_cls}'>Priority: {prio_display_str}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+                    if notes:
+                        note_preview = notes if len(notes) <= 90 else notes[:87] + "..."
+                        st.markdown(f"<div style='font-size:0.74rem; color:#64748b; margin-top:6px;'>Note: {note_preview}</div>", unsafe_allow_html=True)
 
 
-# -----------------------
-# Main App Header
-# -----------------------
-col_header_left, col_header_right = st.columns([2.2, 2.8])
+@fragment_decorator
+def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str):
+    # AI Daily Action Plan placed first so mobile portrait shows today's plan immediately at the top
+    col_ai_main, col_sched_side = st.columns([1.85, 1.15])
 
-with col_header_left:
-    st.markdown(
-        f"""
-        <div style='margin-bottom:6px;'>
-            <div style='display:flex; align-items:center; gap:10px;'>
-                <svg width='30' height='30' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
-                    <rect x='2' y='3' width='12' height='12' rx='2' fill='white' opacity='0.5'/>
-                    <rect x='6' y='7' width='12' height='12' rx='2' fill='white' opacity='0.8'/>
-                    <rect x='10' y='11' width='12' height='12' rx='2' fill='white'/>
-                </svg>
-                <span class='app-title' style='line-height:1;'>Assignment Tracker</span>
-            </div>
-            <div class='app-subtitle' style='margin-top:4px;'>{email} &bull; <span style='color:#818cf8;'>System: {user_prio_mode}</span></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    user_schedule = list(get_schedule_cached(user_id))
+    stored_max_daily_work_dict = get_max_work_cached(user_id)
 
-with col_header_right:
-    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.1, 1.1, 1.1, 0.9])
-    with btn_col1:
-        if st.button("New Task", key="toolbar_add", use_container_width=True):
-            st.session_state["_open_add_modal"] = True
-            safe_rerun()
-    with btn_col2:
-        if st.button("Courses", key="toolbar_courses", use_container_width=True):
-            st.session_state["_open_manage_courses"] = True
-            safe_rerun()
-    with btn_col3:
-        if st.button("Priority View", key="toolbar_prio_sys", use_container_width=True):
-            st.session_state["_show_prio_config_modal"] = True
-            safe_rerun()
-    with btn_col4:
-        if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
-            sign_out_user()
-
-today_str = get_local_now().strftime("%A, %B %d, %Y")
-st.markdown(
-    f'<div class="date-banner">Today\'s Date: {today_str}</div>',
-    unsafe_allow_html=True,
-)
-
-if "df_cached" not in st.session_state:
-    st.session_state.df_cached = fetch_assignments(user_id)
-
-df_all = st.session_state.df_cached.copy()
-
-# -----------------------
-# Navigation Tabs
-# -----------------------
-tab_assignments, tab_tests, tab_other, tab_schedule, tab_completed = st.tabs([
-    "Assignments", 
-    "Tests & Quizzes", 
-    "Other",
-    "Weekly Schedule & AI Planner",
-    "Completed & Recovery"
-])
-
-# TAB 1: Regular Assignments
-with tab_assignments:
-    df_regular = df_all[
-        (df_all["status"] != "Done") & 
-        (df_all["atype"] != "Test & Quizzes") & 
-        (df_all["atype"] != "Other") & 
-        (df_all["course"] != "OTHER")
-    ]
-    render_assignment_grid(df_regular, user_prio_mode, key_prefix="reg_")
-
-# TAB 2: Tests & Quizzes Only
-with tab_tests:
-    df_tests = df_all[
-        (df_all["status"] != "Done") & 
-        (df_all["atype"] == "Test & Quizzes")
-    ]
-    render_assignment_grid(df_tests, user_prio_mode, key_prefix="tests_")
-
-# TAB 3: Dedicated "Other" Tasks Section
-with tab_other:
-    df_other = df_all[
-        (df_all["status"] != "Done") & 
-        ((df_all["atype"] == "Other") | (df_all["course"] == "OTHER"))
-    ]
-    render_assignment_grid(df_other, user_prio_mode, key_prefix="other_")
-
-# TAB 4: Weekly Schedule & AI Time-Slot Planner
-with tab_schedule:
-    col_sched_left, col_sched_right = st.columns([1.2, 1.8])
-
-    user_schedule = _read_schedule_file(user_id)
-
-    with col_sched_left:
-        st.markdown("<div style='font-weight:700; font-size:1.05rem; color:#f8fafc;'>Weekly Commitments</div>", unsafe_allow_html=True)
-        st.caption("Enter recurring busy blocks so the AI plans around them.")
-
-        with st.form("add_schedule_event_form"):
-            s_day = st.selectbox("Day of Week", DAYS_OF_WEEK)
-            s_title = st.text_input("Event Name", placeholder="e.g. Robotics, Practice")
-            c_time1, c_time2 = st.columns(2)
-            with c_time1:
-                s_start_raw = st.text_input("Start Time", value="3:30 PM", key="sched_start_input")
-            with c_time2:
-                s_end_raw = st.text_input("End Time", value="5:00 PM", key="sched_end_input")
-
-            if st.form_submit_button("Add Block", use_container_width=True):
-                st_time = parse_time_str(s_start_raw)
-                end_time = parse_time_str(s_end_raw)
-                if s_title.strip() and st_time and end_time:
-                    formatted_start = st_time.strftime("%I:%M %p").lstrip("0")
-                    formatted_end = end_time.strftime("%I:%M %p").lstrip("0")
-                    user_schedule.append({
-                        "id": str(uuid.uuid4()),
-                        "day": s_day,
-                        "title": s_title.strip(),
-                        "start": formatted_start,
-                        "end": formatted_end
-                    })
-                    _write_schedule_file(user_id, user_schedule)
-                    safe_rerun()
-
-        st.markdown("---")
-        if user_schedule:
-            for idx, item in enumerate(user_schedule):
-                col_item_a, col_item_b = st.columns([4, 1])
-                with col_item_a:
-                    st.markdown(f"<span style='color:#cbd5e1; font-size:0.82rem;'>**{item.get('day')}**: {item.get('title')} ({item.get('start')} - {item.get('end')})</span>", unsafe_allow_html=True)
-                with col_item_b:
-                    if st.button("Remove", key=f"del_sched_{idx}"):
-                        user_schedule.pop(idx)
-                        _write_schedule_file(user_id, user_schedule)
-                        safe_rerun()
-
-    with col_sched_right:
+    with col_ai_main:
         st.markdown("<div style='font-weight:700; font-size:1.05rem; color:#f8fafc;'>AI Daily Action Plan</div>", unsafe_allow_html=True)
         st.caption("Optimized timeline across available days based on due dates & priority.")
 
-        # Real-time JS-driven Undo Toast with Animated Progress Bar
         undo_state = st.session_state.get("_undo_slot_state")
         if undo_state:
             elapsed = (get_local_now() - undo_state["time"]).total_seconds()
-            remaining_sec = max(0, 15 - elapsed)
-
-            if remaining_sec > 0:
-                u_col1, u_col2 = st.columns([4.2, 1])
+            if elapsed < 15:
+                u_col1, u_col2 = st.columns([4.2, 1.2])
                 with u_col1:
                     st.markdown(
                         f"<div class='undo-toast-box'>"
-                        f"<span style='font-size: 0.85rem; color: #f8fafc;'>Finished <b>{undo_state['title']}</b> for today</span>"
-                        f"<div class='undo-progress-bar' style='animation-duration: {remaining_sec}s;'></div>"
+                        f"<span style='font-size: 0.84rem; color: #f8fafc;'>Finished <b>{undo_state['title']}</b> for today</span>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
                 with u_col2:
-                    if st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True):
-                        safe_rerun()
-
-                js_trigger = (
-                    "<script>\n"
-                    "setTimeout(function() {\n"
-                    "    window.parent.postMessage({type: 'streamlit:rerun'}, '*');\n"
-                    f"}}, {int(remaining_sec * 1000)});\n"
-                    "</script>"
-                )
-                components.html(js_trigger, height=0)
+                    st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True)
             else:
                 del st.session_state["_undo_slot_state"]
 
@@ -1822,10 +1781,10 @@ with tab_schedule:
         with st.expander("⏱️ Customize Daily Work Limits (Per Day)", expanded=False):
             st.caption("Set maximum allowed study/work time independently for each day of the week:")
             opts = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 300]
-            
+
             day_cols = st.columns(7)
             new_limits_dict = {}
-            
+
             for d_idx, d_name in enumerate(DAYS_OF_WEEK):
                 with day_cols[d_idx]:
                     cur_val = stored_max_daily_work_dict.get(d_name, 60)
@@ -1841,21 +1800,16 @@ with tab_schedule:
 
             if new_limits_dict != stored_max_daily_work_dict:
                 _write_max_work_config(user_id, new_limits_dict)
-                if "_ai_plan_result" in st.session_state:
-                    del st.session_state["_ai_plan_result"]
-                safe_rerun()
+                stored_max_daily_work_dict = new_limits_dict
 
-        fresh_assignments = fetch_assignments(user_id)
+        cached_assignments = get_assignments_cached(user_id)
 
-        if gen_plan_click:
+        if gen_plan_click or "_ai_plan_result" not in st.session_state:
             st.session_state["_ai_plan_result"] = generate_ai_study_plan(
-                fresh_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict
+                cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict
             )
 
-        plan_res = st.session_state.get("_ai_plan_result") or generate_ai_study_plan(
-            fresh_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict
-        )
-
+        plan_res = st.session_state["_ai_plan_result"]
         status = plan_res.get("status")
         plan = plan_res.get("plan", {})
 
@@ -1864,15 +1818,14 @@ with tab_schedule:
         elif status == "all_done":
             st.success("All assignments marked completed!")
         elif status == "success" and plan:
-            completed_slots_today = _read_completed_slots(user_id)
+            completed_slots_today = get_completed_slots_cached(user_id)
             completed_set = set(completed_slots_today.keys())
 
             for day_name, day_data in plan.items():
                 if not isinstance(day_data, dict):
                     st.session_state["_ai_plan_result"] = generate_ai_study_plan(
-                        fresh_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict
+                        cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict
                     )
-                    safe_rerun()
                     break
 
                 raw_slots = day_data.get("slots", [])
@@ -1880,7 +1833,7 @@ with tab_schedule:
 
                 day_cap_mins = stored_max_daily_work_dict.get(day_name, 60)
                 scheduled_mins = sum(s.get("eta_mins", 0) for s in visible_slots)
-                
+
                 sched_formatted = format_mins_to_hrs_mins(scheduled_mins)
                 max_formatted = format_mins_to_hrs_mins(day_cap_mins)
 
@@ -1903,7 +1856,7 @@ with tab_schedule:
                         slot_prio_str = format_priority_display(s.get("priority"), user_prio_mode)
                         slot_duration_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
 
-                        c_chk, c_text = st.columns([0.35, 7.65])
+                        c_chk, c_text = st.columns([0.45, 7.55])
                         with c_chk:
                             chk_widget_key = f"chk_{s_key}_{idx_slot}"
                             st.checkbox(
@@ -1931,52 +1884,215 @@ with tab_schedule:
 
                 st.markdown('</div>', unsafe_allow_html=True)
 
-# TAB 5: Completed Items & Recovery Tab
-with tab_completed:
-    st.markdown("<div style='font-weight:800; font-size:1.2rem; color:#f8fafc; margin-bottom:4px;'>Completed Tasks & Recovery Center</div>", unsafe_allow_html=True)
+    with col_sched_side:
+        st.markdown("<div style='font-weight:700; font-size:1.05rem; color:#f8fafc;'>Weekly Commitments</div>", unsafe_allow_html=True)
+        st.caption("Enter recurring busy blocks so the AI plans around them.")
+
+        with st.form("add_schedule_event_form", clear_on_submit=True):
+            s_day = st.selectbox("Day of Week", DAYS_OF_WEEK)
+            s_title = st.text_input("Event Name", placeholder="e.g. Robotics, Practice")
+            c_time1, c_time2 = st.columns(2)
+            with c_time1:
+                s_start_raw = st.text_input("Start Time", value="3:30 PM", key="sched_start_input")
+            with c_time2:
+                s_end_raw = st.text_input("End Time", value="5:00 PM", key="sched_end_input")
+
+            if st.form_submit_button("Add Block", use_container_width=True):
+                st_time = parse_time_str(s_start_raw)
+                end_time = parse_time_str(s_end_raw)
+                if s_title.strip() and st_time and end_time:
+                    formatted_start = st_time.strftime("%I:%M %p").lstrip("0")
+                    formatted_end = end_time.strftime("%I:%M %p").lstrip("0")
+                    user_schedule.append({
+                        "id": str(uuid.uuid4()),
+                        "day": s_day,
+                        "title": s_title.strip(),
+                        "start": formatted_start,
+                        "end": formatted_end
+                    })
+                    _write_schedule_file(user_id, user_schedule)
+
+        st.markdown("---")
+        if user_schedule:
+            for idx, item in enumerate(user_schedule):
+                b_id = item.get("id", str(idx))
+                col_item_a, col_item_b = st.columns([4, 1.3])
+                with col_item_a:
+                    st.markdown(f"<span style='color:#cbd5e1; font-size:0.82rem;'>**{item.get('day')}**: {item.get('title')} ({item.get('start')} - {item.get('end')})</span>", unsafe_allow_html=True)
+                with col_item_b:
+                    st.button(
+                        "Remove",
+                        key=f"del_sched_{b_id}",
+                        on_click=on_remove_schedule_block,
+                        args=(user_id, b_id),
+                        use_container_width=True
+                    )
+
+
+@fragment_decorator
+def render_completed_recovery_fragment(user_id: str):
+    st.markdown("<div style='font-weight:800; font-size:1.15rem; color:#f8fafc; margin-bottom:4px;'>Completed Tasks & Recovery Center</div>", unsafe_allow_html=True)
     st.caption("Finished assignments stay here until their due date passes. Restoring an item returns it to your active tab with its previous status.")
 
     rec_col1, rec_col2 = st.columns(2)
 
     with rec_col1:
-        st.markdown("<div style='font-weight:700; font-size:1.05rem; color:#38bdf8; margin-bottom:12px;'>1. Daily Planner Slots Checked Today</div>", unsafe_allow_html=True)
-        completed_slots_dict = _read_completed_slots(user_id)
+        st.markdown("<div style='font-weight:700; font-size:1.0rem; color:#38bdf8; margin-bottom:10px;'>1. Daily Planner Slots Checked Today</div>", unsafe_allow_html=True)
+        completed_slots_dict = get_completed_slots_cached(user_id)
 
         if completed_slots_dict:
             for s_key, s_data in list(completed_slots_dict.items()):
-                c_info, c_act = st.columns([4, 1.4])
+                c_info, c_act = st.columns([3.8, 1.6])
                 with c_info:
                     st.markdown(
                         f"<div class='recovery-card'>"
                         f"<div><b style='color:#f8fafc;'>{s_data.get('title')}</b> {get_course_badge_html(s_data.get('course'))}"
-                        f"<div style='font-size:0.76rem; color:#94a3b8; margin-top:2px;'>{s_data.get('day_name')} &bull; {s_data.get('time')}</div></div>"
+                        f"<div style='font-size:0.75rem; color:#94a3b8; margin-top:2px;'>{s_data.get('day_name')} &bull; {s_data.get('time')}</div></div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
                 with c_act:
-                    if st.button("Restore to Planner", key=f"rec_slot_{s_key}", use_container_width=True):
-                        restore_single_daily_slot(s_key, user_id)
+                    st.button(
+                        "Restore",
+                        key=f"rec_slot_{s_key}",
+                        on_click=restore_single_daily_slot,
+                        args=(s_key, user_id),
+                        use_container_width=True
+                    )
         else:
             st.info("No daily planner slots marked completed today.")
 
     with rec_col2:
-        st.markdown("<div style='font-weight:700; font-size:1.05rem; color:#fbbf24; margin-bottom:12px;'>2. Finished Assignments (Database)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-weight:700; font-size:1.0rem; color:#fbbf24; margin-bottom:10px;'>2. Finished Assignments (Database)</div>", unsafe_allow_html=True)
+        df_all = get_assignments_cached(user_id)
         df_done_db = df_all[df_all["status"] == "Done"].copy()
 
         if not df_done_db.empty:
             for _, r_done in df_done_db.iterrows():
                 r_aid = r_done.get("id")
-                c_info_db, c_act_db = st.columns([4, 1.4])
+                c_info_db, c_act_db = st.columns([3.8, 1.6])
                 with c_info_db:
                     st.markdown(
                         f"<div class='recovery-card'>"
                         f"<div><b style='color:#f8fafc;'>{r_done.get('title')}</b> {get_course_badge_html(r_done.get('course'))}"
-                        f"<div style='font-size:0.76rem; color:#94a3b8; margin-top:2px;'>Type: {r_done.get('atype')} &bull; Due: {r_done.get('due_date')}</div></div>"
+                        f"<div style='font-size:0.75rem; color:#94a3b8; margin-top:2px;'>Type: {r_done.get('atype')} &bull; Due: {r_done.get('due_date')}</div></div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
                 with c_act_db:
-                    if st.button("Restore Item", key=f"rec_db_{r_aid}", use_container_width=True):
-                        restore_single_assignment(r_done.to_dict())
+                    st.button(
+                        "Restore",
+                        key=f"rec_db_{r_aid}",
+                        on_click=restore_single_assignment,
+                        args=(r_done.to_dict(),),
+                        use_container_width=True
+                    )
         else:
             st.info("No main database assignments currently marked as 'Done'.")
+
+
+# -----------------------
+# Auth Session Control & Preferences
+# -----------------------
+user = st.session_state.get("user")
+
+if not user:
+    render_terminal_auth_page()
+    st.stop()
+
+user_id = str(user.get("id"))
+email = str(user.get("email", "User"))
+
+# Single-query session hydration (instant on subsequent fragment reruns)
+hydrate_user_session(user_id)
+active_prio_mode = get_prio_cached(user_id)
+
+if not get_courses_cached(user_id) and "_show_welcome_courses_modal" not in st.session_state:
+    st.session_state["_show_welcome_courses_modal"] = True
+
+if not active_prio_mode and "_show_prio_config_modal" not in st.session_state:
+    st.session_state["_show_prio_config_modal"] = True
+
+user_prio_mode = active_prio_mode or "Low / Medium / High"
+
+if st.session_state.get("_show_welcome_courses_modal", False):
+    show_welcome_courses_dialog(user_id)
+
+if st.session_state.get("_show_prio_config_modal", False):
+    show_prio_config_dialog(user_id)
+
+
+# -----------------------
+# Main App Header
+# -----------------------
+col_header_left, col_header_right = st.columns([2.2, 2.8])
+
+with col_header_left:
+    st.markdown(
+        f"""
+        <div style='margin-bottom:6px;'>
+            <div style='display:flex; align-items:center; gap:10px;'>
+                <svg width='28' height='28' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <rect x='2' y='3' width='12' height='12' rx='2' fill='white' opacity='0.5'/>
+                    <rect x='6' y='7' width='12' height='12' rx='2' fill='white' opacity='0.8'/>
+                    <rect x='10' y='11' width='12' height='12' rx='2' fill='white'/>
+                </svg>
+                <span class='app-title' style='line-height:1;'>Assignment Tracker</span>
+            </div>
+            <div class='app-subtitle' style='margin-top:4px;'>{email} &bull; <span style='color:#818cf8;'>System: {user_prio_mode}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col_header_right:
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.1, 1.1, 1.1, 0.9])
+    with btn_col1:
+        if st.button("+ Task", key="toolbar_add", use_container_width=True):
+            show_add_assignment_dialog(user_id, user_prio_mode)
+    with btn_col2:
+        if st.button("Courses", key="toolbar_courses", use_container_width=True):
+            show_manage_courses_dialog(user_id)
+    with btn_col3:
+        if st.button("Priority", key="toolbar_prio_sys", use_container_width=True):
+            show_prio_config_dialog(user_id)
+    with btn_col4:
+        if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
+            sign_out_user()
+
+today_str = get_local_now().strftime("%A, %B %d, %Y")
+st.markdown(
+    f'<div class="date-banner">Today\'s Date: {today_str}</div>',
+    unsafe_allow_html=True,
+)
+
+
+# -----------------------
+# Fast Pill Navigation & Isolated Fragments
+# -----------------------
+NAV_OPTIONS = [
+    "Assignments",
+    "Tests & Quizzes",
+    "Other",
+    "Weekly Schedule & AI Planner",
+    "Completed & Recovery",
+]
+
+active_tab = st.radio(
+    "Navigation",
+    NAV_OPTIONS,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_nav_pill"
+)
+
+if active_tab == "Assignments":
+    render_assignment_grid_fragment(user_id, "regular", user_prio_mode, key_prefix="reg_")
+elif active_tab == "Tests & Quizzes":
+    render_assignment_grid_fragment(user_id, "tests", user_prio_mode, key_prefix="tests_")
+elif active_tab == "Other":
+    render_assignment_grid_fragment(user_id, "other", user_prio_mode, key_prefix="other_")
+elif active_tab == "Weekly Schedule & AI Planner":
+    render_schedule_and_ai_fragment(user_id, user_prio_mode)
+elif active_tab == "Completed & Recovery":
+    render_completed_recovery_fragment(user_id)
