@@ -1696,7 +1696,10 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     completed_slots: Dict[str, Dict[str, Any]] = {}
     seen_updates_ver: str = ""
     theme_cfg: Dict[str, Any] = dict(DEFAULT_THEME_CONFIG)
-    shs_cfg: Dict[str, Any] = {"lunch": "L2", "periods": {str(i): "" for i in range(1, 9)}}
+    shs_cfg: Dict[str, Any] = {
+        "lunches": {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"},
+        "periods": {str(i): "" for i in range(1, 9)},
+    }
 
     assignment_rows: List[Dict[str, Any]] = []
     expired_done_ids: List[str] = []
@@ -1752,6 +1755,9 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
             try:
                 parsed = json.loads(str(r_notes or "{}"))
                 if isinstance(parsed, dict):
+                    if "lunch" in parsed and "lunches" not in parsed:
+                        old_l = parsed["lunch"] if parsed["lunch"] in ("L1", "L2", "L3") else "L2"
+                        shs_cfg["lunches"] = {k: old_l for k in ("A", "B", "C", "D", "X")}
                     shs_cfg.update(parsed)
             except Exception:
                 pass
@@ -1848,7 +1854,12 @@ def _write_theme_config(user_id: str, theme_cfg: Dict[str, Any]) -> None:
 
 def get_shs_cached(user_id: str) -> Dict[str, Any]:
     hydrate_user_session(user_id)
-    return st.session_state.get("cfg_shs", {"lunch": "L2", "periods": {str(i): "" for i in range(1, 9)}})
+    default_lunches = {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}
+    cfg = st.session_state.get("cfg_shs", {"lunches": dict(default_lunches), "periods": {str(i): "" for i in range(1, 9)}})
+    if "lunches" not in cfg:
+        old_l = cfg.get("lunch", "L2")
+        cfg["lunches"] = {k: old_l for k in ("A", "B", "C", "D", "X")}
+    return cfg
 
 
 def _write_shs_config(user_id: str, shs_cfg: Dict[str, Any]) -> None:
@@ -2718,11 +2729,11 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
 @fragment_decorator
 def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
     shs_cfg = get_shs_cached(user_id)
-    saved_lunch = shs_cfg.get("lunch", "L2")
+    saved_lunches = dict(shs_cfg.get("lunches", {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}))
     saved_periods = dict(shs_cfg.get("periods", {str(i): "" for i in range(1, 9)}))
     user_courses = get_courses_cached(user_id)
 
-    col_bells, col_mapper = st.columns([1.85, 1.15])
+    col_bells, col_mapper = st.columns([1.8, 1.2])
 
     with col_bells:
         st.markdown("<div class='section-heading'>SHS Daily Letter Day & Bell Schedule</div>", unsafe_allow_html=True)
@@ -2757,14 +2768,16 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
                 key=f"shs_sched_sel_{view_date.isoformat()}",
             )
 
+        active_lunch = saved_lunches.get(active_letter, "L2")
+
         if detected_letter in ("NO SCHOOL", "WEEKEND"):
             st.info(f"**{view_date.strftime('%A, %b %d')}**: {detected_letter} ({day_note}). Previewing **{active_letter} Day ({active_sched})** below.")
         elif day_note:
-            st.caption(f"Calendar Note: **{day_note}** • {SHS_DROPPED_PERIODS.get(active_letter, '')}")
+            st.caption(f"Calendar Note: **{day_note}** • {SHS_DROPPED_PERIODS.get(active_letter, '')} • {active_letter} Day Lunch: **{active_lunch}**")
         else:
-            st.caption(f"Rotation Info: **{SHS_DROPPED_PERIODS.get(active_letter, '')}** • Lunch Wave: **{saved_lunch}**")
+            st.caption(f"Rotation Info: **{SHS_DROPPED_PERIODS.get(active_letter, '')}** • {active_letter} Day Lunch: **{active_lunch}**")
 
-        blocks = build_shs_bell_blocks(active_letter, active_sched, saved_lunch, saved_periods)
+        blocks = build_shs_bell_blocks(active_letter, active_sched, active_lunch, saved_periods)
         is_today = (view_date == now_local.date()) and (detected_letter not in ("NO SCHOOL", "WEEKEND"))
         now_mins = now_local.hour * 60 + now_local.minute
 
@@ -2796,163 +2809,60 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
             )
 
     with col_mapper:
-        st.markdown("<div class='section-heading'>My Periods & Lunch Wave</div>", unsafe_allow_html=True)
-        st.caption("Map your classes to Periods 1–8 and pick your Lunch Wave.")
+        st.markdown("<div class='section-heading'>My Periods & Lunch Waves</div>", unsafe_allow_html=True)
+        st.caption("Set your lunch wave for each letter day and map your classes to Periods 1–8.")
 
         with st.form("shs_period_mapper_form"):
+            st.markdown("**Lunch Wave by Letter Day**")
             lunch_opts = ["L1", "L2", "L3"]
-            selected_lunch = st.radio(
-                "Lunch Wave",
-                options=lunch_opts,
-                index=lunch_opts.index(saved_lunch) if saved_lunch in lunch_opts else 1,
-                horizontal=True,
-                key="shs_lunch_wave_radio",
-            )
+            new_lunches: Dict[str, str] = {}
 
+            l_row1 = st.columns(3)
+            for idx, (l_code, l_lbl) in enumerate([("A", "A (Per. 5)"), ("B", "B (Per. 8)"), ("C", "C (Per. 7)")]):
+                with l_row1[idx]:
+                    cur_l = saved_lunches.get(l_code, "L2")
+                    new_lunches[l_code] = st.selectbox(
+                        l_lbl,
+                        options=lunch_opts,
+                        index=lunch_opts.index(cur_l) if cur_l in lunch_opts else 1,
+                        key=f"shs_lunch_sel_{l_code}",
+                    )
+
+            l_row2 = st.columns(2)
+            for idx, (l_code, l_lbl) in enumerate([("D", "D Day (Per. 6)"), ("X", "X Day (Per. 6)")]):
+                with l_row2[idx]:
+                    cur_l = saved_lunches.get(l_code, "L2")
+                    new_lunches[l_code] = st.selectbox(
+                        l_lbl,
+                        options=lunch_opts,
+                        index=lunch_opts.index(cur_l) if cur_l in lunch_opts else 1,
+                        key=f"shs_lunch_sel_{l_code}",
+                    )
+
+            st.markdown("---")
+            st.markdown("**Classes by Period**")
             course_choices = [""] + sorted(list(set(user_courses + ["STUDY HALL", "FREE / UNASSIGNED"])))
             new_periods: Dict[str, str] = {}
+
+            p_col1, p_col2 = st.columns(2)
             for p_num in range(1, 9):
                 p_key = str(p_num)
                 cur_val = str(saved_periods.get(p_key, "")).strip().upper()
                 opts_for_p = list(course_choices)
                 if cur_val and cur_val not in opts_for_p:
                     opts_for_p.insert(1, cur_val)
-                new_periods[p_key] = st.selectbox(
-                    f"Period {p_num}",
-                    options=opts_for_p,
-                    index=opts_for_p.index(cur_val) if cur_val in opts_for_p else 0,
-                    key=f"shs_p_sel_{p_num}",
-                )
+                target_col = p_col1 if p_num <= 4 else p_col2
+                with target_col:
+                    new_periods[p_key] = st.selectbox(
+                        f"Period {p_num}",
+                        options=opts_for_p,
+                        index=opts_for_p.index(cur_val) if cur_val in opts_for_p else 0,
+                        key=f"shs_p_sel_{p_num}",
+                    )
 
             if st.form_submit_button("Save My SHS Schedule", use_container_width=True):
-                _write_shs_config(user_id, {"lunch": selected_lunch, "periods": new_periods})
-                st.success("SHS period schedule saved!")
-
-
-@fragment_decorator
-def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light: bool):
-    # Weekly Commitments on LEFT (1.15), AI Daily Action Plan on RIGHT (1.85)
-    col_sched_side, col_ai_main = st.columns([1.15, 1.85])
-
-    user_schedule = list(get_schedule_cached(user_id))
-    stored_max_daily_work_dict = get_max_work_cached(user_id)
-
-    with col_sched_side:
-        st.markdown("<div class='section-heading'>Weekly Commitments</div>", unsafe_allow_html=True)
-        st.caption("Enter recurring busy blocks so the AI plans around them.")
-
-        with st.form("add_schedule_event_form", clear_on_submit=True):
-            s_day = st.selectbox("Day of Week", DAYS_OF_WEEK)
-            s_title = st.text_input("Event Name", placeholder="e.g. Robotics, Practice")
-            c_time1, c_time2 = st.columns(2)
-            with c_time1:
-                s_start_raw = st.text_input("Start Time", value="3:30 PM", key="sched_start_input")
-            with c_time2:
-                s_end_raw = st.text_input("End Time", value="5:00 PM", key="sched_end_input")
-
-            if st.form_submit_button("Add Block", use_container_width=True):
-                st_time, end_time = parse_time_str(s_start_raw), parse_time_str(s_end_raw)
-                if s_title.strip() and st_time and end_time:
-                    user_schedule.append({
-                        "id": str(uuid.uuid4()), "day": s_day, "title": s_title.strip(),
-                        "start": st_time.strftime("%I:%M %p").lstrip("0"),
-                        "end": end_time.strftime("%I:%M %p").lstrip("0"),
-                    })
-                    _write_schedule_file(user_id, user_schedule)
-
-        st.markdown("---")
-        if user_schedule:
-            for idx, item in enumerate(user_schedule):
-                b_id = item.get("id", str(idx))
-                col_item_a, col_item_b = st.columns([4, 1.3])
-                with col_item_a:
-                    st.markdown(f"<span class='sched-item-text'><b>{item.get('day')}</b>: {item.get('title')} ({item.get('start')} - {item.get('end')})</span>", unsafe_allow_html=True)
-                with col_item_b:
-                    st.button("Remove", key=f"del_sched_{b_id}", on_click=on_remove_schedule_block, args=(user_id, b_id), use_container_width=True)
-
-    with col_ai_main:
-        st.markdown("<div class='section-heading'>AI Daily Action Plan</div>", unsafe_allow_html=True)
-        st.caption("Optimized timeline across available days based on due dates & priority.")
-
-        undo_state = st.session_state.get("_undo_slot_state")
-        if undo_state:
-            if (get_local_now() - undo_state["time"]).total_seconds() < 15:
-                u_col1, u_col2 = st.columns([4.2, 1.2])
-                with u_col1:
-                    st.markdown(f"<div class='undo-toast-box'><span style='font-size:0.84rem;'>Finished <b>{undo_state['title']}</b> for today</span></div>", unsafe_allow_html=True)
-                with u_col2:
-                    st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True)
-            else:
-                st.session_state.pop("_undo_slot_state", None)
-
-        ctrl_col1, ctrl_col2 = st.columns([1.5, 1.2])
-        with ctrl_col1:
-            gen_plan_click = st.button("Re-Calculate Plan", key="btn_gen_ai_plan", use_container_width=True)
-        with ctrl_col2:
-            show_time_slots = st.toggle("Show Time Slots", value=True, key="toggle_show_time_slots")
-
-        with st.expander("⏱️ Customize Daily Work Limits (Per Day)", expanded=False):
-            st.caption("Set maximum allowed study/work time independently for each day of the week:")
-            opts = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 300]
-            day_cols = st.columns(7)
-            new_limits_dict = {}
-            for d_idx, d_name in enumerate(DAYS_OF_WEEK):
-                with day_cols[d_idx]:
-                    cur_val = stored_max_daily_work_dict.get(d_name, 60)
-                    new_limits_dict[d_name] = st.selectbox(d_name[:3], options=opts, index=opts.index(cur_val) if cur_val in opts else 4, key=f"p_limit_{d_name}", format_func=lambda x: f"{x}m")
-            if new_limits_dict != stored_max_daily_work_dict:
-                _write_max_work_config(user_id, new_limits_dict)
-                stored_max_daily_work_dict = new_limits_dict
-
-        cached_assignments = get_assignments_cached(user_id)
-        if gen_plan_click or "_ai_plan_result" not in st.session_state:
-            st.session_state["_ai_plan_result"] = generate_ai_study_plan(cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict)
-
-        plan_res = st.session_state["_ai_plan_result"]
-        status, plan = plan_res.get("status"), plan_res.get("plan", {})
-
-        if status == "no_tasks":
-            st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
-        elif status == "all_done":
-            st.success("All assignments marked completed!")
-        elif status == "success" and plan:
-            completed_set = set(get_completed_slots_cached(user_id).keys())
-            for day_name, day_data in plan.items():
-                if not isinstance(day_data, dict):
-                    continue
-                visible_slots = [s for s in day_data.get("slots", []) if s.get("slot_key") not in completed_set]
-                day_cap_mins = stored_max_daily_work_dict.get(day_name, 60)
-                scheduled_mins = sum(s.get("eta_mins", 0) for s in visible_slots)
-
-                st.markdown(
-                    f'<div class="ai-day-card"><div class="ai-day-header">'
-                    f'<span class="ai-day-title">{day_name}</span>'
-                    f'<div class="day-time-badge">{format_mins_to_hrs_mins(scheduled_mins)} scheduled <span class="time-max-cap">/ Max {format_mins_to_hrs_mins(day_cap_mins)}</span></div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-                if day_data.get("busy"):
-                    st.caption("Busy: " + ", ".join(day_data["busy"]))
-
-                if visible_slots:
-                    for idx_slot, s in enumerate(visible_slots):
-                        s_key = s.get("slot_key")
-                        slot_prio_str = format_priority_display(s.get("priority"), user_prio_mode)
-                        slot_dur_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
-                        c_chk, c_text = st.columns([0.45, 7.55])
-                        with c_chk:
-                            st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s["title"], s, user_id))
-                        with c_text:
-                            prefix_html = f"<span class='slot-badge'>{s['time']}</span> — " if show_time_slots else ""
-                            st.markdown(
-                                f"{prefix_html}<span class='slot-title-text'>{s['title']}</span> {get_course_badge_html(s['course'], is_light=is_light)} "
-                                f"<span class='slot-meta-text'>| Priority: {slot_prio_str} ({slot_dur_str})</span>",
-                                unsafe_allow_html=True,
-                            )
-                else:
-                    st.markdown("<span class='slot-meta-text'>No work scheduled for this day. Free time!</span>", unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
+                _write_shs_config(user_id, {"lunches": new_lunches, "periods": new_periods})
+                st.success("SHS period schedule & lunch waves saved!")
 
 @fragment_decorator
 def render_completed_recovery_fragment(user_id: str, is_light: bool):
