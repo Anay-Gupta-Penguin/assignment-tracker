@@ -1,5 +1,5 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment, Theme Studio & High-Contrast Light/Dark Edition
+📚 Assignment Tracker — Zero-Latency @st.fragment, SHS Bell Schedule & Theme Studio
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import io
 import json
 import re
 import threading
+import urllib.request
 import uuid
 from datetime import datetime, date, timedelta, time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -31,7 +32,7 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.2"
+CURRENT_APP_VERSION = "3.3"
 
 
 def get_local_now() -> datetime:
@@ -352,7 +353,7 @@ li[aria-selected="true"] {
     box-shadow: 0 4px 12px var(--accent-glow) !important;
 }
 
-/* Pill Navigation Bar (Compatible with all Streamlit versions) */
+/* Pill Navigation Bar */
 div[data-testid="stRadio"] > div[role="radiogroup"] {
     display: flex;
     flex-wrap: nowrap;
@@ -372,7 +373,7 @@ div[data-testid="stRadio"] > div[role="radiogroup"]::-webkit-scrollbar {
 div[data-testid="stRadio"] > div[role="radiogroup"] > label {
     background-color: transparent !important;
     border-radius: 8px !important;
-    padding: 7px 16px !important;
+    padding: 7px 15px !important;
     margin: 0 !important;
     cursor: pointer;
     border: none !important;
@@ -389,7 +390,7 @@ div[data-testid="stRadio"] input[type="radio"] {
 div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
     color: var(--text-secondary) !important;
     font-weight: 700 !important;
-    font-size: 0.85rem !important;
+    font-size: 0.84rem !important;
     margin: 0 !important;
 }
 div[data-testid="stRadio"] > div[role="radiogroup"] > label[data-checked="true"],
@@ -403,7 +404,7 @@ div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) p
     color: var(--on-accent-text) !important;
 }
 
-/* Frosted Card Containers, Forms & Expanders (Version-Independent Selectors) */
+/* Frosted Card Containers, Forms & Expanders */
 div[data-testid="stVerticalBlockBorderWrapper"],
 div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"]:has(.card-task-title),
 div[data-testid="stColumn"] div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"]:has(.card-task-title),
@@ -529,13 +530,67 @@ div[data-testid="stDialog"] div[role="dialog"] {
     border: 1.5px solid var(--accent-border);
     border-radius: 10px;
     padding: 9px 16px;
-    font-size: 0.85rem;
+    font-size: 0.86rem;
     font-weight: 800;
     color: var(--text-primary) !important;
     text-align: center;
     margin-bottom: 14px;
     backdrop-filter: blur(10px);
     box-shadow: 0 2px 10px var(--shadow-color);
+}
+
+.shs-day-pill {
+    background: var(--accent);
+    color: var(--on-accent-text) !important;
+    padding: 2px 10px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 800;
+    margin-left: 8px;
+    display: inline-block;
+}
+
+.bell-row {
+    background: var(--card-bg);
+    border: 1.5px solid var(--card-border);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    backdrop-filter: blur(12px);
+}
+
+.bell-row-active {
+    border: 2px solid var(--accent-readable) !important;
+    box-shadow: 0 0 18px var(--accent-glow) !important;
+    background: var(--accent-soft) !important;
+}
+
+.bell-period-badge {
+    background: var(--slot-bg);
+    color: var(--accent-readable) !important;
+    border: 1.5px solid var(--accent-border);
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 800;
+    margin-right: 8px;
+    display: inline-block;
+}
+
+.bell-live-tag {
+    background: var(--accent);
+    color: var(--on-accent-text) !important;
+    padding: 2px 8px;
+    border-radius: 5px;
+    font-size: 0.70rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    margin-left: 6px;
 }
 
 .prio-high {
@@ -881,7 +936,462 @@ SYSTEM_TITLES = {
     "__SYSTEM_COMPLETED_SLOTS__",
     "__SYSTEM_SEEN_UPDATES__",
     "__SYSTEM_THEME_CONFIG__",
+    "__SYSTEM_SHS_CONFIG__",
 }
+
+SHS_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oKpAjRBmpZcNkSK4PGqxLwynwcRIfZjVpnn2VPy_eGw/export?format=csv&gid=930331453"
+
+SHS_SCHEDULE_TYPES = [
+    "Daily",
+    "Connect",
+    "2 Hour Delay",
+    "Early Dismissal",
+    "Emergency Early Dismissal",
+    "X Day",
+    "X Day 2 Hour Delay",
+    "X Day Early Dismissal",
+]
+
+# Full 2026-2027 SHS Letter Day & Schedule Calendar: (letter_day, schedule_type, note)
+SHS_CALENDAR_2026_2027: Dict[str, Tuple[str, str, str]] = {
+    # August / September 2026
+    "2026-08-26": ("X", "X Day Early Dismissal", "First Day of School"),
+    "2026-08-27": ("A", "Early Dismissal", "Per. 1, 3, 5, 7 Early Dismissal"),
+    "2026-08-28": ("D", "Early Dismissal", "Per. 2, 4, 6, 8 Early Dismissal"),
+    "2026-08-31": ("A", "Connect", ""),
+    "2026-09-01": ("B", "Daily", ""),
+    "2026-09-02": ("C", "Daily", ""),
+    "2026-09-03": ("D", "Daily", ""),
+    "2026-09-04": ("A", "Daily", ""),
+    "2026-09-07": ("NO SCHOOL", "No School", "Labor Day"),
+    "2026-09-08": ("B", "Daily", ""),
+    "2026-09-09": ("C", "Daily", ""),
+    "2026-09-10": ("D", "Daily", ""),
+    "2026-09-11": ("A", "Daily", ""),
+    "2026-09-14": ("B", "Daily", ""),
+    "2026-09-15": ("C", "Daily", ""),
+    "2026-09-16": ("D", "Daily", ""),
+    "2026-09-17": ("A", "Daily", ""),
+    "2026-09-18": ("B", "Daily", ""),
+    "2026-09-21": ("NO SCHOOL", "No School", "Yom Kippur"),
+    "2026-09-22": ("C", "Daily", ""),
+    "2026-09-23": ("D", "Early Dismissal", ""),
+    "2026-09-24": ("A", "Daily", ""),
+    "2026-09-25": ("B", "Daily", ""),
+    "2026-09-28": ("C", "Daily", ""),
+    "2026-09-29": ("D", "Daily", ""),
+    "2026-09-30": ("A", "Daily", ""),
+    # October 2026
+    "2026-10-01": ("B", "Daily", ""),
+    "2026-10-02": ("C", "Daily", ""),
+    "2026-10-05": ("D", "Daily", ""),
+    "2026-10-06": ("A", "Daily", ""),
+    "2026-10-07": ("B", "Daily", ""),
+    "2026-10-08": ("C", "Connect", ""),
+    "2026-10-09": ("D", "Daily", ""),
+    "2026-10-12": ("NO SCHOOL", "No School", "Columbus Day"),
+    "2026-10-13": ("A", "Daily", ""),
+    "2026-10-14": ("SPECIAL", "Early Dismissal", "PSAT Testing"),
+    "2026-10-15": ("B", "Daily", ""),
+    "2026-10-16": ("C", "Daily", ""),
+    "2026-10-19": ("D", "Daily", ""),
+    "2026-10-20": ("A", "Daily", ""),
+    "2026-10-21": ("B", "Daily", ""),
+    "2026-10-22": ("C", "Daily", ""),
+    "2026-10-23": ("D", "Daily", ""),
+    "2026-10-26": ("A", "Connect", ""),
+    "2026-10-27": ("B", "Daily", ""),
+    "2026-10-28": ("C", "Daily", ""),
+    "2026-10-29": ("D", "Daily", "End of Q1"),
+    "2026-10-30": ("A", "Daily", ""),
+    # November 2026
+    "2026-11-02": ("B", "Daily", ""),
+    "2026-11-03": ("NO SCHOOL", "No School", "Election Day"),
+    "2026-11-04": ("C", "Daily", ""),
+    "2026-11-05": ("D", "Connect", ""),
+    "2026-11-06": ("A", "Daily", ""),
+    "2026-11-09": ("B", "Daily", ""),
+    "2026-11-10": ("C", "Daily", ""),
+    "2026-11-11": ("D", "Connect", ""),
+    "2026-11-12": ("A", "Daily", ""),
+    "2026-11-13": ("B", "Daily", ""),
+    "2026-11-16": ("C", "Daily", ""),
+    "2026-11-17": ("D", "Daily", ""),
+    "2026-11-18": ("A", "Daily", ""),
+    "2026-11-19": ("B", "Daily", ""),
+    "2026-11-20": ("C", "Daily", ""),
+    "2026-11-23": ("D", "Daily", ""),
+    "2026-11-24": ("A", "Daily", ""),
+    "2026-11-25": ("B", "Early Dismissal", ""),
+    "2026-11-26": ("NO SCHOOL", "No School", "Thanksgiving Break"),
+    "2026-11-27": ("NO SCHOOL", "No School", "Thanksgiving Break"),
+    "2026-11-30": ("C", "Daily", ""),
+    # December 2026
+    "2026-12-01": ("D", "Daily", ""),
+    "2026-12-02": ("A", "Daily", ""),
+    "2026-12-03": ("B", "Connect", ""),
+    "2026-12-04": ("C", "Daily", ""),
+    "2026-12-07": ("D", "Daily", ""),
+    "2026-12-08": ("A", "Daily", ""),
+    "2026-12-09": ("B", "Connect", ""),
+    "2026-12-10": ("C", "Daily", ""),
+    "2026-12-11": ("D", "Daily", ""),
+    "2026-12-14": ("A", "Daily", ""),
+    "2026-12-15": ("B", "Daily", ""),
+    "2026-12-16": ("C", "Early Dismissal", ""),
+    "2026-12-17": ("D", "Daily", ""),
+    "2026-12-18": ("A", "Daily", ""),
+    "2026-12-21": ("B", "Daily", ""),
+    "2026-12-22": ("C", "Daily", ""),
+    "2026-12-23": ("D", "Early Dismissal", ""),
+    "2026-12-24": ("NO SCHOOL", "No School", "Holiday Break"),
+    "2026-12-25": ("NO SCHOOL", "No School", "Holiday Break"),
+    "2026-12-28": ("NO SCHOOL", "No School", "Holiday Break"),
+    "2026-12-29": ("NO SCHOOL", "No School", "Holiday Break"),
+    "2026-12-30": ("NO SCHOOL", "No School", "Holiday Break"),
+    "2026-12-31": ("NO SCHOOL", "No School", "Holiday Break"),
+    # January 2027
+    "2027-01-01": ("NO SCHOOL", "No School", "New Year's Day"),
+    "2027-01-04": ("A", "Daily", ""),
+    "2027-01-05": ("B", "Daily", ""),
+    "2027-01-06": ("C", "Daily", ""),
+    "2027-01-07": ("D", "Daily", ""),
+    "2027-01-08": ("X", "X Day", ""),
+    "2027-01-11": ("X", "X Day", "End of Q2"),
+    "2027-01-12": ("EXAMS", "Early Dismissal", "Mid Term Exams"),
+    "2027-01-13": ("EXAMS", "Early Dismissal", "Mid Term Exams"),
+    "2027-01-14": ("EXAMS", "Early Dismissal", "Mid Term Exams"),
+    "2027-01-15": ("EXAMS", "Early Dismissal", "Mid Term Exams"),
+    "2027-01-18": ("NO SCHOOL", "No School", "MLK Jr. Day"),
+    "2027-01-19": ("A", "Daily", ""),
+    "2027-01-20": ("B", "Daily", ""),
+    "2027-01-21": ("C", "Daily", ""),
+    "2027-01-22": ("D", "Daily", ""),
+    "2027-01-25": ("A", "Connect", ""),
+    "2027-01-26": ("B", "Daily", ""),
+    "2027-01-27": ("C", "Daily", ""),
+    "2027-01-28": ("D", "Daily", ""),
+    "2027-01-29": ("X", "X Day", ""),
+    # February 2027
+    "2027-02-01": ("A", "Daily", ""),
+    "2027-02-02": ("B", "Daily", ""),
+    "2027-02-03": ("C", "Daily", ""),
+    "2027-02-04": ("D", "Daily", ""),
+    "2027-02-05": ("X", "X Day", ""),
+    "2027-02-08": ("A", "Daily", ""),
+    "2027-02-09": ("B", "Connect", ""),
+    "2027-02-10": ("C", "Early Dismissal", ""),
+    "2027-02-11": ("D", "Daily", ""),
+    "2027-02-12": ("X", "X Day", ""),
+    "2027-02-15": ("NO SCHOOL", "No School", "February Break"),
+    "2027-02-16": ("NO SCHOOL", "No School", "February Break"),
+    "2027-02-17": ("A", "Daily", "Per. 1, 3, 5, 7"),
+    "2027-02-18": ("D", "Daily", "Per. 2, 4, 6, 8"),
+    "2027-02-19": ("X", "X Day", ""),
+    "2027-02-22": ("A", "Daily", ""),
+    "2027-02-23": ("B", "Daily", ""),
+    "2027-02-24": ("C", "Daily", ""),
+    "2027-02-25": ("D", "Daily", ""),
+    "2027-02-26": ("X", "X Day", ""),
+    # March 2027
+    "2027-03-01": ("A", "Daily", ""),
+    "2027-03-02": ("B", "Daily", ""),
+    "2027-03-03": ("C", "Daily", ""),
+    "2027-03-04": ("D", "Daily", ""),
+    "2027-03-05": ("A", "Daily", ""),
+    "2027-03-08": ("B", "Daily", ""),
+    "2027-03-09": ("NO SCHOOL", "No School", "Professional Development"),
+    "2027-03-10": ("C", "Connect", ""),
+    "2027-03-11": ("D", "Daily", ""),
+    "2027-03-12": ("A", "Daily", ""),
+    "2027-03-15": ("B", "Daily", ""),
+    "2027-03-16": ("C", "Daily", ""),
+    "2027-03-17": ("D", "Daily", "SAT Testing"),
+    "2027-03-18": ("A", "Daily", ""),
+    "2027-03-19": ("B", "Daily", ""),
+    "2027-03-22": ("C", "Daily", ""),
+    "2027-03-23": ("D", "Daily", "End of Q3"),
+    "2027-03-24": ("A", "Daily", ""),
+    "2027-03-25": ("B", "Daily", ""),
+    "2027-03-26": ("NO SCHOOL", "No School", "Good Friday"),
+    "2027-03-29": ("C", "Daily", ""),
+    "2027-03-30": ("D", "Daily", ""),
+    "2027-03-31": ("A", "Daily", ""),
+    # April 2027
+    "2027-04-01": ("B", "Daily", ""),
+    "2027-04-02": ("C", "Daily", ""),
+    "2027-04-05": ("D", "Daily", ""),
+    "2027-04-06": ("A", "Connect", ""),
+    "2027-04-07": ("B", "Daily", ""),
+    "2027-04-08": ("C", "Daily", ""),
+    "2027-04-09": ("D", "Daily", ""),
+    "2027-04-12": ("NO SCHOOL", "No School", "Spring Break"),
+    "2027-04-13": ("NO SCHOOL", "No School", "Spring Break"),
+    "2027-04-14": ("NO SCHOOL", "No School", "Spring Break"),
+    "2027-04-15": ("NO SCHOOL", "No School", "Spring Break"),
+    "2027-04-16": ("NO SCHOOL", "No School", "Spring Break"),
+    "2027-04-19": ("A", "Daily", ""),
+    "2027-04-20": ("B", "Daily", "NGSS Testing"),
+    "2027-04-21": ("C", "Early Dismissal", ""),
+    "2027-04-22": ("D", "Daily", ""),
+    "2027-04-23": ("A", "Daily", ""),
+    "2027-04-26": ("B", "Daily", ""),
+    "2027-04-27": ("C", "Connect", ""),
+    "2027-04-28": ("D", "Daily", ""),
+    "2027-04-29": ("A", "Daily", ""),
+    "2027-04-30": ("B", "Daily", ""),
+    # May 2027
+    "2027-05-03": ("C", "Daily", "AP Exams"),
+    "2027-05-04": ("D", "Daily", "AP Exams"),
+    "2027-05-05": ("A", "Daily", "AP Exams"),
+    "2027-05-06": ("B", "Daily", "AP Exams"),
+    "2027-05-07": ("C", "Daily", "AP Exams"),
+    "2027-05-10": ("D", "Daily", "AP Exams"),
+    "2027-05-11": ("A", "Daily", "AP Exams"),
+    "2027-05-12": ("B", "Daily", "AP Exams"),
+    "2027-05-13": ("C", "Daily", "AP Exams"),
+    "2027-05-14": ("D", "Daily", "AP Exams"),
+    "2027-05-17": ("A", "Daily", ""),
+    "2027-05-18": ("B", "Daily", ""),
+    "2027-05-19": ("SPECIAL", "Early Dismissal", "Capstone Day"),
+    "2027-05-20": ("C", "Daily", ""),
+    "2027-05-21": ("D", "Daily", ""),
+    "2027-05-24": ("A", "Daily", ""),
+    "2027-05-25": ("B", "Daily", ""),
+    "2027-05-26": ("C", "Connect", ""),
+    "2027-05-27": ("D", "Daily", ""),
+    "2027-05-28": ("X", "X Day", ""),
+    "2027-05-31": ("NO SCHOOL", "No School", "Memorial Day"),
+    # June 2027
+    "2027-06-01": ("X", "X Day", "End of Q4"),
+    "2027-06-02": ("EXAMS", "Early Dismissal", "Final Exams"),
+    "2027-06-03": ("EXAMS", "Early Dismissal", "Final Exams"),
+    "2027-06-04": ("EXAMS", "Early Dismissal", "Final Exams"),
+    "2027-06-07": ("EXAMS", "Early Dismissal", "Final Exams (Tentative Last Day)"),
+}
+
+SHS_ROTATIONS: Dict[str, List[int]] = {
+    "A": [1, 2, 3, 5, 6, 7],
+    "B": [4, 1, 2, 8, 5, 6],
+    "C": [3, 4, 1, 7, 8, 5],
+    "D": [2, 3, 4, 6, 7, 8],
+}
+
+SHS_DROPPED_PERIODS: Dict[str, str] = {
+    "A": "Drops Period 4 & 8",
+    "B": "Drops Period 3 & 7",
+    "C": "Drops Period 2 & 6",
+    "D": "Drops Period 1 & 5",
+    "X": "All 8 Periods Meet",
+}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_live_shs_sheet_override(date_iso: str) -> Optional[Tuple[str, str, str]]:
+    """Attempts to read today's row from the live SHS Google Sheet if accessible."""
+    try:
+        req = urllib.request.Request(SHS_SHEET_CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            csv_text = resp.read().decode("utf-8", errors="ignore")
+        d_obj = datetime.strptime(date_iso, "%Y-%m-%d").date()
+        variants = {
+            date_iso,
+            f"{d_obj.month}/{d_obj.day}/{d_obj.year}",
+            f"{d_obj.month:02d}/{d_obj.day:02d}/{d_obj.year}",
+            f"{d_obj.month}/{d_obj.day}/{str(d_obj.year)[2:]}",
+        }
+        for line in csv_text.splitlines():
+            parts = [p.strip().strip('"') for p in line.split(",")]
+            if any(v in parts for v in variants):
+                joined = " ".join(parts).upper()
+                if "NO SCHOOL" in joined:
+                    return ("NO SCHOOL", "No School", "Live Sheet Update")
+                letter = ""
+                for tok in parts:
+                    t_clean = tok.strip().upper().replace("DAY", "").strip()
+                    if t_clean in ("A", "B", "C", "D", "X"):
+                        letter = t_clean
+                        break
+                if letter:
+                    sched = "X Day" if letter == "X" else "Daily"
+                    if "2 HOUR" in joined or "DELAY" in joined:
+                        sched = "X Day 2 Hour Delay" if letter == "X" else "2 Hour Delay"
+                    elif "EMERGENCY" in joined:
+                        sched = "Emergency Early Dismissal"
+                    elif "EARLY" in joined:
+                        sched = "X Day Early Dismissal" if letter == "X" else "Early Dismissal"
+                    elif "CONNECT" in joined:
+                        sched = "Connect"
+                    return (letter, sched, "Live Sheet")
+    except Exception:
+        pass
+    return None
+
+
+def get_shs_day_info(target_date: date) -> Dict[str, str]:
+    iso = target_date.isoformat()
+    if target_date.weekday() >= 5:
+        return {"letter": "WEEKEND", "schedule": "No School", "note": "Weekend"}
+    live = fetch_live_shs_sheet_override(iso)
+    if live:
+        return {"letter": live[0], "schedule": live[1], "note": live[2]}
+    if iso in SHS_CALENDAR_2026_2027:
+        l_day, s_type, note = SHS_CALENDAR_2026_2027[iso]
+        return {"letter": l_day, "schedule": s_type, "note": note}
+    return {"letter": "A", "schedule": "Daily", "note": ""}
+
+
+def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, period_classes: Dict[str, str]) -> List[Dict[str, str]]:
+    """Builds exact period-by-period bell blocks from all 8 official SHS PDF schedules."""
+    l_clean = letter_day if letter_day in ("A", "B", "C", "D") else "A"
+    rot = SHS_ROTATIONS[l_clean]
+
+    def _cls(p_num: int) -> str:
+        c_name = str(period_classes.get(str(p_num), "")).strip()
+        return c_name if c_name else f"Period {p_num}"
+
+    def _lunch_split(p_num: int, l1: Tuple[str, str], c1: Tuple[str, str],
+                     c2a: Tuple[str, str], l2: Tuple[str, str], c2b: Tuple[str, str],
+                     c3: Tuple[str, str], l3: Tuple[str, str]) -> List[Dict[str, str]]:
+        cname = _cls(p_num)
+        if lunch_wave == "L1":
+            return [
+                {"label": "Lunch Wave 1", "class_name": "Lunch (L1)", "start": l1[0], "end": l1[1], "mins": "30m", "is_lunch": "1"},
+                {"label": f"Period {p_num}", "class_name": cname, "start": c1[0], "end": c1[1], "mins": "56-60m", "is_lunch": "0"},
+            ]
+        elif lunch_wave == "L3":
+            return [
+                {"label": f"Period {p_num}", "class_name": cname, "start": c3[0], "end": c3[1], "mins": "56-60m", "is_lunch": "0"},
+                {"label": "Lunch Wave 3", "class_name": "Lunch (L3)", "start": l3[0], "end": l3[1], "mins": "30m", "is_lunch": "1"},
+            ]
+        else:  # L2 default
+            return [
+                {"label": f"Period {p_num} (Part 1)", "class_name": cname, "start": c2a[0], "end": c2a[1], "mins": "26-28m", "is_lunch": "0"},
+                {"label": "Lunch Wave 2", "class_name": "Lunch (L2)", "start": l2[0], "end": l2[1], "mins": "30m", "is_lunch": "1"},
+                {"label": f"Period {p_num} (Part 2)", "class_name": cname, "start": c2b[0], "end": c2b[1], "mins": "26-28m", "is_lunch": "0"},
+            ]
+
+    if schedule_type == "Connect":
+        blocks = [
+            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:23 AM", "mins": "51m", "is_lunch": "0"},
+            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "8:27 AM", "end": "9:18 AM", "mins": "51m", "is_lunch": "0"},
+            {"label": "CONNECT", "class_name": "Connect / Announcements", "start": "9:22 AM", "end": "9:53 AM", "mins": "31m", "is_lunch": "0"},
+            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:57 AM", "end": "10:48 AM", "mins": "51m", "is_lunch": "0"},
+        ]
+        blocks.extend(_lunch_split(
+            rot[3],
+            ("10:50 AM", "11:20 AM"), ("11:24 AM", "12:20 PM"),
+            ("10:52 AM", "11:18 AM"), ("11:20 AM", "11:50 AM"), ("11:54 AM", "12:20 PM"),
+            ("10:52 AM", "11:48 AM"), ("11:50 AM", "12:20 PM"),
+        ))
+        blocks.extend([
+            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:24 PM", "end": "1:15 PM", "mins": "51m", "is_lunch": "0"},
+            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:19 PM", "end": "2:10 PM", "mins": "51m", "is_lunch": "0"},
+        ])
+        return blocks
+
+    if schedule_type == "2 Hour Delay":
+        blocks = [
+            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "9:32 AM", "end": "10:06 AM", "mins": "34m", "is_lunch": "0"},
+            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "10:10 AM", "end": "10:44 AM", "mins": "34m", "is_lunch": "0"},
+            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]) + " (Ann.)", "start": "10:48 AM", "end": "11:24 AM", "mins": "34m", "is_lunch": "0"},
+        ]
+        blocks.extend(_lunch_split(
+            rot[3],
+            ("11:24 AM", "11:54 AM"), ("11:58 AM", "12:54 PM"),
+            ("11:28 AM", "11:54 AM"), ("11:54 AM", "12:24 PM"), ("12:28 PM", "12:54 PM"),
+            ("11:28 AM", "12:24 PM"), ("12:24 PM", "12:54 PM"),
+        ))
+        blocks.extend([
+            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:58 PM", "end": "1:32 PM", "mins": "34m", "is_lunch": "0"},
+            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:36 PM", "end": "2:10 PM", "mins": "34m", "is_lunch": "0"},
+        ])
+        return blocks
+
+    if schedule_type == "Early Dismissal":
+        times_ed = [("7:32 AM", "8:05 AM", "33m"), ("8:09 AM", "8:42 AM", "33m"), ("8:46 AM", "9:24 AM", "38m"),
+                    ("9:28 AM", "10:01 AM", "33m"), ("10:05 AM", "10:38 AM", "33m"), ("10:42 AM", "11:15 AM", "33m")]
+        return [
+            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]) + (" (Ann.)" if idx == 2 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            for idx, t in enumerate(times_ed)
+        ]
+
+    if schedule_type == "Emergency Early Dismissal":
+        times_eed = [("7:32 AM", "8:25 AM", "53m"), ("8:29 AM", "8:57 AM", "28m"), ("9:01 AM", "9:29 AM", "28m"),
+                     ("9:33 AM", "10:01 AM", "28m"), ("10:05 AM", "10:33 AM", "28m"), ("10:37 AM", "11:05 AM", "28m")]
+        blocks = [
+            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]) + (" (Ann.)" if idx == 1 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            for idx, t in enumerate(times_eed)
+        ]
+        blocks.append({"label": "Express Lunch", "class_name": "Express Lunch Pick Up", "start": "11:05 AM", "end": "11:15 AM", "mins": "10m", "is_lunch": "1"})
+        return blocks
+
+    if schedule_type == "X Day":
+        blocks = [
+            {"label": "Period 1", "class_name": _cls(1), "start": "7:32 AM", "end": "8:12 AM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 2", "class_name": _cls(2), "start": "8:16 AM", "end": "8:56 AM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 3", "class_name": _cls(3) + " (Ann.)", "start": "9:00 AM", "end": "9:42 AM", "mins": "42m", "is_lunch": "0"},
+            {"label": "Period 4", "class_name": _cls(4), "start": "9:46 AM", "end": "10:26 AM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 5", "class_name": _cls(5), "start": "10:30 AM", "end": "11:10 AM", "mins": "40m", "is_lunch": "0"},
+        ]
+        blocks.extend(_lunch_split(
+            6,
+            ("11:12 AM", "11:42 AM"), ("11:46 AM", "12:42 PM"),
+            ("11:14 AM", "11:40 AM"), ("11:42 AM", "12:12 PM"), ("12:16 PM", "12:42 PM"),
+            ("11:14 AM", "12:10 PM"), ("12:12 PM", "12:42 PM"),
+        ))
+        blocks.extend([
+            {"label": "Period 7", "class_name": _cls(7), "start": "12:46 PM", "end": "1:26 PM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 8", "class_name": _cls(8), "start": "1:30 PM", "end": "2:10 PM", "mins": "40m", "is_lunch": "0"},
+        ])
+        return blocks
+
+    if schedule_type == "X Day 2 Hour Delay":
+        blocks = [
+            {"label": "Period 1", "class_name": _cls(1), "start": "9:32 AM", "end": "9:55 AM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 2", "class_name": _cls(2), "start": "9:59 AM", "end": "10:22 AM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 3", "class_name": _cls(3) + " (Ann.)", "start": "10:26 AM", "end": "10:50 AM", "mins": "24m", "is_lunch": "0"},
+            {"label": "Period 4", "class_name": _cls(4), "start": "10:54 AM", "end": "11:17 AM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 5", "class_name": _cls(5), "start": "11:21 AM", "end": "11:44 AM", "mins": "23m", "is_lunch": "0"},
+        ]
+        blocks.extend(_lunch_split(
+            6,
+            ("11:46 AM", "12:16 PM"), ("12:20 PM", "1:16 PM"),
+            ("11:48 AM", "12:14 PM"), ("12:16 PM", "12:46 PM"), ("12:50 PM", "1:16 PM"),
+            ("11:48 AM", "12:44 PM"), ("12:46 PM", "1:16 PM"),
+        ))
+        blocks.extend([
+            {"label": "Period 7", "class_name": _cls(7), "start": "1:20 PM", "end": "1:43 PM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 8", "class_name": _cls(8), "start": "1:47 PM", "end": "2:10 PM", "mins": "23m", "is_lunch": "0"},
+        ])
+        return blocks
+
+    if schedule_type == "X Day Early Dismissal":
+        times_xed = [("7:32 AM", "7:56 AM", "24m"), ("8:00 AM", "8:24 AM", "24m"), ("8:28 AM", "8:55 AM", "27m"),
+                     ("8:59 AM", "9:23 AM", "24m"), ("9:27 AM", "9:51 AM", "24m"), ("9:55 AM", "10:19 AM", "24m"),
+                     ("10:23 AM", "10:47 AM", "24m"), ("10:51 AM", "11:15 AM", "24m")]
+        return [
+            {"label": f"Period {idx + 1}", "class_name": _cls(idx + 1) + (" (Ann.)" if idx == 2 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            for idx, t in enumerate(times_xed)
+        ]
+
+    # Default: Daily Schedule
+    blocks = [
+        {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:29 AM", "mins": "57m", "is_lunch": "0"},
+        {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]) + " (Ann.)", "start": "8:33 AM", "end": "9:31 AM", "mins": "58m", "is_lunch": "0"},
+        {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:35 AM", "end": "10:32 AM", "mins": "57m", "is_lunch": "0"},
+    ]
+    blocks.extend(_lunch_split(
+        rot[3],
+        ("10:34 AM", "11:04 AM"), ("11:08 AM", "12:08 PM"),
+        ("10:36 AM", "11:04 AM"), ("11:06 AM", "11:36 AM"), ("11:40 AM", "12:08 PM"),
+        ("10:36 AM", "11:36 AM"), ("11:38 AM", "12:08 PM"),
+    ))
+    blocks.extend([
+        {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:12 PM", "end": "1:09 PM", "mins": "57m", "is_lunch": "0"},
+        {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:13 PM", "end": "2:10 PM", "mins": "57m", "is_lunch": "0"},
+    ])
+    return blocks
 
 
 # -----------------------
@@ -948,6 +1458,17 @@ def init_db_once():
                 eta TEXT,
                 notes TEXT,
                 created_at TEXT
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                category TEXT NOT NULL,
+                rating INTEGER,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
         """))
     return True
@@ -1114,8 +1635,8 @@ def clear_all_session_caches():
     for k in [
         "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
         "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
-        "cfg_seen_updates", "cfg_theme", "_ai_plan_result", "_undo_slot_state",
-        "_hydrated_uid", "_pending_edit_aid"
+        "cfg_seen_updates", "cfg_theme", "cfg_shs", "_ai_plan_result",
+        "_undo_slot_state", "_hydrated_uid", "_pending_edit_aid"
     ]:
         st.session_state.pop(k, None)
 
@@ -1175,6 +1696,7 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     completed_slots: Dict[str, Dict[str, Any]] = {}
     seen_updates_ver: str = ""
     theme_cfg: Dict[str, Any] = dict(DEFAULT_THEME_CONFIG)
+    shs_cfg: Dict[str, Any] = {"lunch": "L2", "periods": {str(i): "" for i in range(1, 9)}}
 
     assignment_rows: List[Dict[str, Any]] = []
     expired_done_ids: List[str] = []
@@ -1226,6 +1748,13 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
                     theme_cfg.update(parsed)
             except Exception:
                 pass
+        elif r_title == "__SYSTEM_SHS_CONFIG__":
+            try:
+                parsed = json.loads(str(r_notes or "{}"))
+                if isinstance(parsed, dict):
+                    shs_cfg.update(parsed)
+            except Exception:
+                pass
         elif r_title not in SYSTEM_TITLES:
             status_val = str(r.get("status") or "Not Started")
             due_val = str(r.get("due_date") or "")
@@ -1258,6 +1787,7 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     st.session_state["cfg_completed_slots_date"] = today_iso
     st.session_state["cfg_seen_updates"] = seen_updates_ver
     st.session_state["cfg_theme"] = theme_cfg
+    st.session_state["cfg_shs"] = shs_cfg
     st.session_state["_hydrated_uid"] = user_id
 
 
@@ -1314,6 +1844,16 @@ def get_theme_cached(user_id: str) -> Dict[str, Any]:
 def _write_theme_config(user_id: str, theme_cfg: Dict[str, Any]) -> None:
     st.session_state["cfg_theme"] = theme_cfg
     _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_theme_config", user_id), user_id, "__SYSTEM_THEME_CONFIG__", json.dumps(theme_cfg), get_local_now().isoformat())
+
+
+def get_shs_cached(user_id: str) -> Dict[str, Any]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_shs", {"lunch": "L2", "periods": {str(i): "" for i in range(1, 9)}})
+
+
+def _write_shs_config(user_id: str, shs_cfg: Dict[str, Any]) -> None:
+    st.session_state["cfg_shs"] = shs_cfg
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_shs_config", user_id), user_id, "__SYSTEM_SHS_CONFIG__", json.dumps(shs_cfg), get_local_now().isoformat())
 
 
 def get_max_work_cached(user_id: str) -> Dict[str, int]:
@@ -1806,21 +2346,21 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.2 NEW</span> <b>Theme Studio & Eye-Friendly Light Mode</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.3 NEW</span> <b>SHS Letter Day & Bell Schedule Tab</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Customize Dark or low-glare Light modes, 10 color presets, custom solid colors, multi-stop gradients, and custom photo backgrounds from the <b>Theme</b> button.
+                    Automatically displays today's Simsbury High School letter day (<b>A / B / C / D / X</b>) and supports all 8 SHS schedules (Daily, Connect, 2 Hour Delay, Early Dismissal, Emergency Early Dismissal, and X Day schedules). Map your classes to Periods 1–8 and pick your Lunch Wave!
                 </div>
             </div>
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>PLANNER</span> <b>Swapped Weekly Commitments & Action Plan</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.2</span> <b>Theme Studio & Eye-Friendly Light Mode</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Your <b>Weekly Commitments</b> now sit on the left side while your <b>AI Daily Action Plan</b> sits right beside them on the right.
+                    Customize Dark or low-glare Light modes, 10 color presets, custom solid colors, multi-stop gradients, and personal photo backgrounds from the <b>Theme</b> button.
                 </div>
             </div>
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>SPEED</span> <b>Zero-Latency @st.fragment Engine</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>FEEDBACK</span> <b>Built-In Feedback Form</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Checking off tasks, changing statuses, and updating daily schedule slots happen instantaneously with zero page freeze.
+                    Click <b>Feedback</b> in the top toolbar anytime to report a bug or suggest a new feature.
                 </div>
             </div>
             """,
@@ -1860,8 +2400,8 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
                 Any task set to <i>Test & Quizzes</i>, containing words like <i>"study"</i>, <i>"review"</i>, or <i>"prep"</i>, or using <b>/day</b> in its duration (e.g. <code>30 mins/day</code>) automatically schedules a session every day leading up to its due date.
             </div>
             <div class='tip-card'>
-                <b>2. Add Weekly Commitments First:</b><br/>
-                Enter practices, clubs, or busy hours on the left side of <b>Weekly Schedule & AI Planner</b> so the AI builds around them.
+                <b>2. Map Your SHS Periods:</b><br/>
+                Open the <b>SHS Bell Schedule</b> tab to assign your classes to Periods 1–8 and choose Lunch Wave 1, 2, or 3 so your daily bell times show your actual classes.
             </div>
             <div class='tip-card'>
                 <b>3. Easy Recovery & Auto-Cleanup:</b><br/>
@@ -2023,7 +2563,90 @@ def show_manage_courses_dialog(user_id: str):
         if v and v not in courses:
             courses.append(v)
             _write_courses_file(user_id, courses)
-            safe_rerun("app")# -----------------------
+            safe_rerun("app")
+
+
+def _save_feedback_entry(user_id: str, email: str, category: str, rating: int, message: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                category TEXT NOT NULL,
+                rating INTEGER,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """))
+        conn.execute(
+            text("""
+                INSERT INTO feedback (id, user_id, email, category, rating, message, created_at)
+                VALUES (:id, :user_id, :email, :category, :rating, :message, :created_at)
+            """),
+            {
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "email": email,
+                "category": category,
+                "rating": rating,
+                "message": message.strip(),
+                "created_at": get_local_now().isoformat(),
+            },
+        )
+
+
+@dialog_decorator("💬 Send Feedback")
+def show_feedback_dialog(user_id: str, email: str):
+    is_admin = (email.lower().strip() == "30guptaa@simsburyschools.net")
+
+    def _render_form():
+        st.caption("Found a bug, have a feature idea, or want to share thoughts on the app? Let me know below.")
+        with st.form("user_feedback_form", clear_on_submit=True):
+            fb_cat = st.selectbox(
+                "Category",
+                ["Feature Request", "Bug Report", "Theme / Design Idea", "General Feedback"],
+                key="fb_category_sel",
+            )
+            fb_rating = st.slider("Overall Experience (1 - 5)", min_value=1, max_value=5, value=5, key="fb_rating_slider")
+            fb_msg = st.text_area(
+                "Your Message",
+                placeholder="Describe your idea or issue...",
+                height=120,
+                key="fb_message_input",
+            )
+            if st.form_submit_button("Submit Feedback", use_container_width=True):
+                if not fb_msg.strip():
+                    st.error("Please enter a message before submitting.")
+                else:
+                    _save_feedback_entry(user_id, email, fb_cat, fb_rating, fb_msg)
+                    st.success("Thank you! Your feedback has been submitted.")
+
+    if is_admin:
+        tab_submit, tab_inbox = st.tabs(["✍️ Submit Feedback", "📥 Admin Inbox"])
+        with tab_submit:
+            _render_form()
+        with tab_inbox:
+            try:
+                with engine.connect() as conn:
+                    rows = conn.execute(text("SELECT * FROM feedback ORDER BY created_at DESC")).mappings().all()
+                if not rows:
+                    st.info("No feedback submissions yet.")
+                else:
+                    for r in rows:
+                        st.markdown(
+                            f"<div class='update-card'>"
+                            f"<div style='margin-bottom:4px;'><span class='update-ver-badge'>{r['category']}</span> "
+                            f"<b>{r['email']}</b> &bull; Rating: {r['rating']}/5</div>"
+                            f"<div style='font-size:0.84rem; margin-top:4px;'>{r['message']}</div>"
+                            f"<div class='card-note-text'>{str(r['created_at'])[:16].replace('T', ' ')}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+            except Exception as e:
+                st.error(f"Could not load feedback: {e}")
+    else:
+        _render_form()# -----------------------
 # Isolated @st.fragment Workspaces
 # -----------------------
 @fragment_decorator
@@ -2090,6 +2713,120 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                     if notes:
                         note_preview = notes if len(notes) <= 90 else notes[:87] + "..."
                         st.markdown(f"<div class='card-note-text'>Note: {note_preview}</div>", unsafe_allow_html=True)
+
+
+@fragment_decorator
+def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
+    shs_cfg = get_shs_cached(user_id)
+    saved_lunch = shs_cfg.get("lunch", "L2")
+    saved_periods = dict(shs_cfg.get("periods", {str(i): "" for i in range(1, 9)}))
+    user_courses = get_courses_cached(user_id)
+
+    col_bells, col_mapper = st.columns([1.85, 1.15])
+
+    with col_bells:
+        st.markdown("<div class='section-heading'>SHS Daily Letter Day & Bell Schedule</div>", unsafe_allow_html=True)
+        st.caption("Synced with the SHS 2026–2027 letter-day calendar and all 8 official bell rotations.")
+
+        now_local = get_local_now()
+        c_d1, c_d2, c_d3 = st.columns([1.15, 0.95, 1.35])
+        with c_d1:
+            view_date = st.date_input("Schedule Date", value=now_local.date(), key="shs_bell_date_input")
+
+        day_info = get_shs_day_info(view_date)
+        detected_letter = day_info.get("letter", "A")
+        detected_sched = day_info.get("schedule", "Daily")
+        day_note = day_info.get("note", "")
+
+        letter_opts = ["A", "B", "C", "D", "X"]
+        default_letter = detected_letter if detected_letter in letter_opts else "A"
+        default_sched = detected_sched if detected_sched in SHS_SCHEDULE_TYPES else ("X Day" if default_letter == "X" else "Daily")
+
+        with c_d2:
+            active_letter = st.selectbox(
+                "Letter Day",
+                options=letter_opts,
+                index=letter_opts.index(default_letter),
+                key=f"shs_letter_sel_{view_date.isoformat()}",
+            )
+        with c_d3:
+            active_sched = st.selectbox(
+                "Bell Schedule",
+                options=SHS_SCHEDULE_TYPES,
+                index=SHS_SCHEDULE_TYPES.index(default_sched),
+                key=f"shs_sched_sel_{view_date.isoformat()}",
+            )
+
+        if detected_letter in ("NO SCHOOL", "WEEKEND"):
+            st.info(f"**{view_date.strftime('%A, %b %d')}**: {detected_letter} ({day_note}). Previewing **{active_letter} Day ({active_sched})** below.")
+        elif day_note:
+            st.caption(f"Calendar Note: **{day_note}** • {SHS_DROPPED_PERIODS.get(active_letter, '')}")
+        else:
+            st.caption(f"Rotation Info: **{SHS_DROPPED_PERIODS.get(active_letter, '')}** • Lunch Wave: **{saved_lunch}**")
+
+        blocks = build_shs_bell_blocks(active_letter, active_sched, saved_lunch, saved_periods)
+        is_today = (view_date == now_local.date()) and (detected_letter not in ("NO SCHOOL", "WEEKEND"))
+        now_mins = now_local.hour * 60 + now_local.minute
+
+        for blk in blocks:
+            st_t = parse_time_str(blk["start"])
+            end_t = parse_time_str(blk["end"])
+            is_live = False
+            if is_today and st_t and end_t:
+                s_m = st_t.hour * 60 + st_t.minute
+                e_m = end_t.hour * 60 + end_t.minute
+                if s_m <= now_mins < e_m:
+                    is_live = True
+
+            row_cls = "bell-row bell-row-active" if is_live else "bell-row"
+            live_badge = "<span class='bell-live-tag'>NOW</span>" if is_live else ""
+            is_lunch_blk = (blk.get("is_lunch") == "1")
+            class_disp = blk["class_name"]
+            if not is_lunch_blk and class_disp.upper() in user_courses:
+                class_html = get_course_badge_html(class_disp, is_light=is_light)
+            else:
+                class_html = f"<span class='slot-title-text'>{class_disp}</span>"
+
+            st.markdown(
+                f"<div class='{row_cls}'>"
+                f"<div><span class='bell-period-badge'>{blk['label']}</span> {class_html}{live_badge}</div>"
+                f"<div class='card-due-text'><b>{blk['start']} – {blk['end']}</b> <span class='slot-meta-text'>({blk['mins']})</span></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    with col_mapper:
+        st.markdown("<div class='section-heading'>My Periods & Lunch Wave</div>", unsafe_allow_html=True)
+        st.caption("Map your classes to Periods 1–8 and pick your Lunch Wave.")
+
+        with st.form("shs_period_mapper_form"):
+            lunch_opts = ["L1", "L2", "L3"]
+            selected_lunch = st.radio(
+                "Lunch Wave",
+                options=lunch_opts,
+                index=lunch_opts.index(saved_lunch) if saved_lunch in lunch_opts else 1,
+                horizontal=True,
+                key="shs_lunch_wave_radio",
+            )
+
+            course_choices = [""] + sorted(list(set(user_courses + ["STUDY HALL", "FREE / UNASSIGNED"])))
+            new_periods: Dict[str, str] = {}
+            for p_num in range(1, 9):
+                p_key = str(p_num)
+                cur_val = str(saved_periods.get(p_key, "")).strip().upper()
+                opts_for_p = list(course_choices)
+                if cur_val and cur_val not in opts_for_p:
+                    opts_for_p.insert(1, cur_val)
+                new_periods[p_key] = st.selectbox(
+                    f"Period {p_num}",
+                    options=opts_for_p,
+                    index=opts_for_p.index(cur_val) if cur_val in opts_for_p else 0,
+                    key=f"shs_p_sel_{p_num}",
+                )
+
+            if st.form_submit_button("Save My SHS Schedule", use_container_width=True):
+                _write_shs_config(user_id, {"lunch": selected_lunch, "periods": new_periods})
+                st.success("SHS period schedule saved!")
 
 
 @fragment_decorator
@@ -2291,7 +3028,7 @@ elif not active_prio_mode:
     show_prio_config_dialog(user_id)
 
 logo_fill = "#0f172a" if is_light_theme else "#ffffff"
-col_header_left, col_header_right = st.columns([1.9, 3.1])
+col_header_left, col_header_right = st.columns([1.75, 3.25])
 
 with col_header_left:
     st.markdown(
@@ -2312,7 +3049,7 @@ with col_header_left:
     )
 
 with col_header_right:
-    b1, b2, b3, b4, b5, b6 = st.columns([1.05, 1.0, 1.0, 0.95, 1.0, 1.0])
+    b1, b2, b3, b4, b5, b6, b7 = st.columns([1.05, 1.0, 1.0, 0.95, 1.15, 1.0, 1.05])
     with b1:
         if st.button("+ Task", key="toolbar_add", use_container_width=True):
             show_add_assignment_dialog(user_id, user_prio_mode)
@@ -2326,16 +3063,33 @@ with col_header_right:
         if st.button("Theme", key="toolbar_theme", use_container_width=True):
             show_theme_dialog(user_id)
     with b5:
+        if st.button("Feedback", key="toolbar_feedback", use_container_width=True):
+            show_feedback_dialog(user_id, email)
+    with b6:
         if st.button("Updates", key="toolbar_updates", use_container_width=True):
             show_updates_dialog(user_id, is_first_time=False)
-    with b6:
+    with b7:
         if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
             sign_out_user()
 
-today_str = get_local_now().strftime("%A, %B %d, %Y")
-st.markdown(f'<div class="date-banner">Today\'s Date: {today_str}</div>', unsafe_allow_html=True)
+now_dt = get_local_now()
+today_str = now_dt.strftime("%A, %B %d, %Y")
+shs_today = get_shs_day_info(now_dt.date())
+l_day_today = shs_today.get("letter", "A")
+sched_today = shs_today.get("schedule", "Daily")
+note_today = shs_today.get("note", "")
 
-NAV_OPTIONS = ["Assignments", "Tests & Quizzes", "Other", "Weekly Schedule & AI Planner", "Completed & Recovery"]
+if l_day_today in ("A", "B", "C", "D", "X"):
+    pill_label = f"{l_day_today} Day &bull; {sched_today}" + (f" ({note_today})" if note_today else "")
+else:
+    pill_label = f"{l_day_today}" + (f" &bull; {note_today}" if note_today else "")
+
+st.markdown(
+    f'<div class="date-banner">Today\'s Date: {today_str} <span class="shs-day-pill">{pill_label}</span></div>',
+    unsafe_allow_html=True,
+)
+
+NAV_OPTIONS = ["Assignments", "Tests & Quizzes", "Other", "SHS Bell Schedule", "Weekly Schedule & AI Planner", "Completed & Recovery"]
 active_tab = st.radio("Navigation", NAV_OPTIONS, horizontal=True, label_visibility="collapsed", key="main_nav_pill")
 
 if active_tab == "Assignments":
@@ -2344,6 +3098,8 @@ elif active_tab == "Tests & Quizzes":
     render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light=is_light_theme, key_prefix="tests_")
 elif active_tab == "Other":
     render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light=is_light_theme, key_prefix="other_")
+elif active_tab == "SHS Bell Schedule":
+    render_shs_bell_schedule_fragment(user_id, is_light=is_light_theme)
 elif active_tab == "Weekly Schedule & AI Planner":
     render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light=is_light_theme)
 elif active_tab == "Completed & Recovery":
