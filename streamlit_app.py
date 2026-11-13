@@ -1241,42 +1241,58 @@ def get_shs_day_info(target_date: date) -> Dict[str, str]:
     return {"letter": "A", "schedule": "Daily", "note": ""}
 
 
-def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, period_classes: Dict[str, str]) -> List[Dict[str, str]]:
+def build_shs_bell_blocks(
+    letter_day: str,
+    schedule_type: str,
+    lunch_wave: str,
+    period_classes: Dict[str, str],
+    study_rooms: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, str]]:
     """Builds exact period-by-period bell blocks from all 8 official SHS PDF schedules."""
     l_clean = letter_day if letter_day in ("A", "B", "C", "D") else "A"
     rot = SHS_ROTATIONS[l_clean]
+    rooms_map = study_rooms or {}
+    day_room_raw = str(rooms_map.get(letter_day, "")).strip()
+    day_room = f"Rm {day_room_raw}" if (day_room_raw and day_room_raw[0].isdigit()) else day_room_raw
 
     def _cls(p_num: int) -> str:
         c_name = str(period_classes.get(str(p_num), "")).strip()
         return c_name if c_name else f"Period {p_num}"
 
-    def _lunch_split(p_num: int, l1: Tuple[str, str], c1: Tuple[str, str],
-                     c2a: Tuple[str, str], l2: Tuple[str, str], c2b: Tuple[str, str],
-                     c3: Tuple[str, str], l3: Tuple[str, str]) -> List[Dict[str, str]]:
+    def _room_for(p_num: int) -> str:
+        return day_room if (_cls(p_num).upper() == "STUDY HALL" and day_room) else ""
+
+    def _lunch_split(
+        p_num: int,
+        l1: Tuple[str, str], c1: Tuple[str, str],
+        c2a: Tuple[str, str], l2: Tuple[str, str], c2b: Tuple[str, str],
+        c3: Tuple[str, str], l3: Tuple[str, str],
+    ) -> List[Dict[str, str]]:
         cname = _cls(p_num)
+        rm = _room_for(p_num)
         if lunch_wave == "L1":
             return [
-                {"label": "Lunch Wave 1", "class_name": "Lunch (L1)", "start": l1[0], "end": l1[1], "mins": "30m", "is_lunch": "1"},
-                {"label": f"Period {p_num}", "class_name": cname, "start": c1[0], "end": c1[1], "mins": "56-60m", "is_lunch": "0"},
+                {"label": "Lunch Wave 1", "class_name": "Lunch (L1)", "start": l1[0], "end": l1[1], "mins": "30m", "is_lunch": "1", "ann": "0", "room": ""},
+                {"label": f"Period {p_num}", "class_name": cname, "start": c1[0], "end": c1[1], "mins": "56-60m", "is_lunch": "0", "ann": "0", "room": rm},
             ]
         elif lunch_wave == "L3":
             return [
-                {"label": f"Period {p_num}", "class_name": cname, "start": c3[0], "end": c3[1], "mins": "56-60m", "is_lunch": "0"},
-                {"label": "Lunch Wave 3", "class_name": "Lunch (L3)", "start": l3[0], "end": l3[1], "mins": "30m", "is_lunch": "1"},
+                {"label": f"Period {p_num}", "class_name": cname, "start": c3[0], "end": c3[1], "mins": "56-60m", "is_lunch": "0", "ann": "0", "room": rm},
+                {"label": "Lunch Wave 3", "class_name": "Lunch (L3)", "start": l3[0], "end": l3[1], "mins": "30m", "is_lunch": "1", "ann": "0", "room": ""},
             ]
-        else:  # L2 default
+        else:
             return [
-                {"label": f"Period {p_num} (Part 1)", "class_name": cname, "start": c2a[0], "end": c2a[1], "mins": "26-28m", "is_lunch": "0"},
-                {"label": "Lunch Wave 2", "class_name": "Lunch (L2)", "start": l2[0], "end": l2[1], "mins": "30m", "is_lunch": "1"},
-                {"label": f"Period {p_num} (Part 2)", "class_name": cname, "start": c2b[0], "end": c2b[1], "mins": "26-28m", "is_lunch": "0"},
+                {"label": f"Period {p_num} (Part 1)", "class_name": cname, "start": c2a[0], "end": c2a[1], "mins": "26-28m", "is_lunch": "0", "ann": "0", "room": rm},
+                {"label": "Lunch Wave 2", "class_name": "Lunch (L2)", "start": l2[0], "end": l2[1], "mins": "30m", "is_lunch": "1", "ann": "0", "room": ""},
+                {"label": f"Period {p_num} (Part 2)", "class_name": cname, "start": c2b[0], "end": c2b[1], "mins": "26-28m", "is_lunch": "0", "ann": "0", "room": rm},
             ]
 
     if schedule_type == "Connect":
         blocks = [
-            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:23 AM", "mins": "51m", "is_lunch": "0"},
-            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "8:27 AM", "end": "9:18 AM", "mins": "51m", "is_lunch": "0"},
-            {"label": "CONNECT", "class_name": "Connect / Announcements", "start": "9:22 AM", "end": "9:53 AM", "mins": "31m", "is_lunch": "0"},
-            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:57 AM", "end": "10:48 AM", "mins": "51m", "is_lunch": "0"},
+            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:23 AM", "mins": "51m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[0])},
+            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "8:27 AM", "end": "9:18 AM", "mins": "51m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[1])},
+            {"label": "CONNECT", "class_name": "CONNECT", "start": "9:22 AM", "end": "9:53 AM", "mins": "31m", "is_lunch": "0", "ann": "1", "room": ""},
+            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:57 AM", "end": "10:48 AM", "mins": "51m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[2])},
         ]
         blocks.extend(_lunch_split(
             rot[3],
@@ -1285,16 +1301,16 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
             ("10:52 AM", "11:48 AM"), ("11:50 AM", "12:20 PM"),
         ))
         blocks.extend([
-            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:24 PM", "end": "1:15 PM", "mins": "51m", "is_lunch": "0"},
-            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:19 PM", "end": "2:10 PM", "mins": "51m", "is_lunch": "0"},
+            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:24 PM", "end": "1:15 PM", "mins": "51m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[4])},
+            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:19 PM", "end": "2:10 PM", "mins": "51m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[5])},
         ])
         return blocks
 
     if schedule_type == "2 Hour Delay":
         blocks = [
-            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "9:32 AM", "end": "10:06 AM", "mins": "34m", "is_lunch": "0"},
-            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "10:10 AM", "end": "10:44 AM", "mins": "34m", "is_lunch": "0"},
-            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]) + " (Ann.)", "start": "10:48 AM", "end": "11:24 AM", "mins": "34m", "is_lunch": "0"},
+            {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "9:32 AM", "end": "10:06 AM", "mins": "34m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[0])},
+            {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "10:10 AM", "end": "10:44 AM", "mins": "34m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[1])},
+            {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "10:48 AM", "end": "11:24 AM", "mins": "34m", "is_lunch": "0", "ann": "1", "room": _room_for(rot[2])},
         ]
         blocks.extend(_lunch_split(
             rot[3],
@@ -1303,8 +1319,8 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
             ("11:28 AM", "12:24 PM"), ("12:24 PM", "12:54 PM"),
         ))
         blocks.extend([
-            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:58 PM", "end": "1:32 PM", "mins": "34m", "is_lunch": "0"},
-            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:36 PM", "end": "2:10 PM", "mins": "34m", "is_lunch": "0"},
+            {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:58 PM", "end": "1:32 PM", "mins": "34m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[4])},
+            {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:36 PM", "end": "2:10 PM", "mins": "34m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[5])},
         ])
         return blocks
 
@@ -1312,7 +1328,7 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
         times_ed = [("7:32 AM", "8:05 AM", "33m"), ("8:09 AM", "8:42 AM", "33m"), ("8:46 AM", "9:24 AM", "38m"),
                     ("9:28 AM", "10:01 AM", "33m"), ("10:05 AM", "10:38 AM", "33m"), ("10:42 AM", "11:15 AM", "33m")]
         return [
-            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]) + (" (Ann.)" if idx == 2 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0", "ann": "1" if idx == 2 else "0", "room": _room_for(rot[idx])}
             for idx, t in enumerate(times_ed)
         ]
 
@@ -1320,19 +1336,19 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
         times_eed = [("7:32 AM", "8:25 AM", "53m"), ("8:29 AM", "8:57 AM", "28m"), ("9:01 AM", "9:29 AM", "28m"),
                      ("9:33 AM", "10:01 AM", "28m"), ("10:05 AM", "10:33 AM", "28m"), ("10:37 AM", "11:05 AM", "28m")]
         blocks = [
-            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]) + (" (Ann.)" if idx == 1 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            {"label": f"Period {rot[idx]}", "class_name": _cls(rot[idx]), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0", "ann": "1" if idx == 1 else "0", "room": _room_for(rot[idx])}
             for idx, t in enumerate(times_eed)
         ]
-        blocks.append({"label": "Express Lunch", "class_name": "Express Lunch Pick Up", "start": "11:05 AM", "end": "11:15 AM", "mins": "10m", "is_lunch": "1"})
+        blocks.append({"label": "Express Lunch", "class_name": "Express Lunch Pick Up", "start": "11:05 AM", "end": "11:15 AM", "mins": "10m", "is_lunch": "1", "ann": "0", "room": ""})
         return blocks
 
     if schedule_type == "X Day":
         blocks = [
-            {"label": "Period 1", "class_name": _cls(1), "start": "7:32 AM", "end": "8:12 AM", "mins": "40m", "is_lunch": "0"},
-            {"label": "Period 2", "class_name": _cls(2), "start": "8:16 AM", "end": "8:56 AM", "mins": "40m", "is_lunch": "0"},
-            {"label": "Period 3", "class_name": _cls(3) + " (Ann.)", "start": "9:00 AM", "end": "9:42 AM", "mins": "42m", "is_lunch": "0"},
-            {"label": "Period 4", "class_name": _cls(4), "start": "9:46 AM", "end": "10:26 AM", "mins": "40m", "is_lunch": "0"},
-            {"label": "Period 5", "class_name": _cls(5), "start": "10:30 AM", "end": "11:10 AM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 1", "class_name": _cls(1), "start": "7:32 AM", "end": "8:12 AM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(1)},
+            {"label": "Period 2", "class_name": _cls(2), "start": "8:16 AM", "end": "8:56 AM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(2)},
+            {"label": "Period 3", "class_name": _cls(3), "start": "9:00 AM", "end": "9:42 AM", "mins": "42m", "is_lunch": "0", "ann": "1", "room": _room_for(3)},
+            {"label": "Period 4", "class_name": _cls(4), "start": "9:46 AM", "end": "10:26 AM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(4)},
+            {"label": "Period 5", "class_name": _cls(5), "start": "10:30 AM", "end": "11:10 AM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(5)},
         ]
         blocks.extend(_lunch_split(
             6,
@@ -1341,18 +1357,18 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
             ("11:14 AM", "12:10 PM"), ("12:12 PM", "12:42 PM"),
         ))
         blocks.extend([
-            {"label": "Period 7", "class_name": _cls(7), "start": "12:46 PM", "end": "1:26 PM", "mins": "40m", "is_lunch": "0"},
-            {"label": "Period 8", "class_name": _cls(8), "start": "1:30 PM", "end": "2:10 PM", "mins": "40m", "is_lunch": "0"},
+            {"label": "Period 7", "class_name": _cls(7), "start": "12:46 PM", "end": "1:26 PM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(7)},
+            {"label": "Period 8", "class_name": _cls(8), "start": "1:30 PM", "end": "2:10 PM", "mins": "40m", "is_lunch": "0", "ann": "0", "room": _room_for(8)},
         ])
         return blocks
 
     if schedule_type == "X Day 2 Hour Delay":
         blocks = [
-            {"label": "Period 1", "class_name": _cls(1), "start": "9:32 AM", "end": "9:55 AM", "mins": "23m", "is_lunch": "0"},
-            {"label": "Period 2", "class_name": _cls(2), "start": "9:59 AM", "end": "10:22 AM", "mins": "23m", "is_lunch": "0"},
-            {"label": "Period 3", "class_name": _cls(3) + " (Ann.)", "start": "10:26 AM", "end": "10:50 AM", "mins": "24m", "is_lunch": "0"},
-            {"label": "Period 4", "class_name": _cls(4), "start": "10:54 AM", "end": "11:17 AM", "mins": "23m", "is_lunch": "0"},
-            {"label": "Period 5", "class_name": _cls(5), "start": "11:21 AM", "end": "11:44 AM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 1", "class_name": _cls(1), "start": "9:32 AM", "end": "9:55 AM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(1)},
+            {"label": "Period 2", "class_name": _cls(2), "start": "9:59 AM", "end": "10:22 AM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(2)},
+            {"label": "Period 3", "class_name": _cls(3), "start": "10:26 AM", "end": "10:50 AM", "mins": "24m", "is_lunch": "0", "ann": "1", "room": _room_for(3)},
+            {"label": "Period 4", "class_name": _cls(4), "start": "10:54 AM", "end": "11:17 AM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(4)},
+            {"label": "Period 5", "class_name": _cls(5), "start": "11:21 AM", "end": "11:44 AM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(5)},
         ]
         blocks.extend(_lunch_split(
             6,
@@ -1361,8 +1377,8 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
             ("11:48 AM", "12:44 PM"), ("12:46 PM", "1:16 PM"),
         ))
         blocks.extend([
-            {"label": "Period 7", "class_name": _cls(7), "start": "1:20 PM", "end": "1:43 PM", "mins": "23m", "is_lunch": "0"},
-            {"label": "Period 8", "class_name": _cls(8), "start": "1:47 PM", "end": "2:10 PM", "mins": "23m", "is_lunch": "0"},
+            {"label": "Period 7", "class_name": _cls(7), "start": "1:20 PM", "end": "1:43 PM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(7)},
+            {"label": "Period 8", "class_name": _cls(8), "start": "1:47 PM", "end": "2:10 PM", "mins": "23m", "is_lunch": "0", "ann": "0", "room": _room_for(8)},
         ])
         return blocks
 
@@ -1371,15 +1387,15 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
                      ("8:59 AM", "9:23 AM", "24m"), ("9:27 AM", "9:51 AM", "24m"), ("9:55 AM", "10:19 AM", "24m"),
                      ("10:23 AM", "10:47 AM", "24m"), ("10:51 AM", "11:15 AM", "24m")]
         return [
-            {"label": f"Period {idx + 1}", "class_name": _cls(idx + 1) + (" (Ann.)" if idx == 2 else ""), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0"}
+            {"label": f"Period {idx + 1}", "class_name": _cls(idx + 1), "start": t[0], "end": t[1], "mins": t[2], "is_lunch": "0", "ann": "1" if idx == 2 else "0", "room": _room_for(idx + 1)}
             for idx, t in enumerate(times_xed)
         ]
 
     # Default: Daily Schedule
     blocks = [
-        {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:29 AM", "mins": "57m", "is_lunch": "0"},
-        {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]) + " (Ann.)", "start": "8:33 AM", "end": "9:31 AM", "mins": "58m", "is_lunch": "0"},
-        {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:35 AM", "end": "10:32 AM", "mins": "57m", "is_lunch": "0"},
+        {"label": f"Period {rot[0]}", "class_name": _cls(rot[0]), "start": "7:32 AM", "end": "8:29 AM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[0])},
+        {"label": f"Period {rot[1]}", "class_name": _cls(rot[1]), "start": "8:33 AM", "end": "9:31 AM", "mins": "58m", "is_lunch": "0", "ann": "1", "room": _room_for(rot[1])},
+        {"label": f"Period {rot[2]}", "class_name": _cls(rot[2]), "start": "9:35 AM", "end": "10:32 AM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[2])},
     ]
     blocks.extend(_lunch_split(
         rot[3],
@@ -1388,12 +1404,10 @@ def build_shs_bell_blocks(letter_day: str, schedule_type: str, lunch_wave: str, 
         ("10:36 AM", "11:36 AM"), ("11:38 AM", "12:08 PM"),
     ))
     blocks.extend([
-        {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:12 PM", "end": "1:09 PM", "mins": "57m", "is_lunch": "0"},
-        {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:13 PM", "end": "2:10 PM", "mins": "57m", "is_lunch": "0"},
+        {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:12 PM", "end": "1:09 PM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[4])},
+        {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:13 PM", "end": "2:10 PM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[5])},
     ])
     return blocks
-
-
 # -----------------------
 # Database Engine & Thread-Safe Background Worker
 # -----------------------
@@ -1507,11 +1521,12 @@ def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
             bg, fg, border = "#fef3c7", "#78350f", "#f59e0b"
         elif any(k in c for k in ["SPAN", "FRENCH", "LANG", "LATIN"]):
             bg, fg, border = "#f3e8ff", "#581c87", "#a855f7"
-        elif c == "OTHER":
-            bg, fg, border = "#e0e7ff", "#3730a3", "#818cf8"
+        elif c in ("OTHER", "STUDY HALL", "FREE / UNASSIGNED", "CONNECT") or c.startswith("PERIOD "):
+            bg, fg, border = "#e2e8f0", "#1e293b", "#64748b"
         else:
             bg, fg, border = "#e0f2fe", "#0c4a6e", "#0284c7"
     else:
+        
         if any(k in c for k in ["MATH", "CALC", "STAT", "ALG", "GEO"]):
             bg, fg, border = "#1e1b4b", "#a5b4fc", "#4338ca"
         elif any(k in c for k in ["SCI", "BIO", "CHEM", "PHYS", "ENV"]):
@@ -1522,8 +1537,8 @@ def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
             bg, fg, border = "#78350f", "#fcd34d", "#d97706"
         elif any(k in c for k in ["SPAN", "FRENCH", "LANG", "LATIN"]):
             bg, fg, border = "#581c87", "#e9d5ff", "#9333ea"
-        elif c == "OTHER":
-            bg, fg, border = "#312e81", "#c7d2fe", "#4f46e5"
+      elif c in ("OTHER", "STUDY HALL", "FREE / UNASSIGNED", "CONNECT") or c.startswith("PERIOD "):
+            bg, fg, border = "#1e293b", "#e2e8f0", "#475569"
         else:
             bg, fg, border = "#0c4a6e", "#7dd3fc", "#0284c7"
 
@@ -2727,11 +2742,20 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
 
 
 @fragment_decorator
-def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
-    shs_cfg = get_shs_cached(user_id)
-    saved_lunches = dict(shs_cfg.get("lunches", {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}))
-    saved_periods = dict(shs_cfg.get("periods", {str(i): "" for i in range(1, 9)}))
-    user_courses = get_courses_cached(user_id)
+def get_shs_cached(user_id: str) -> Dict[str, Any]:
+    hydrate_user_session(user_id)
+    default_lunches = {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}
+    default_rooms = {"A": "", "B": "", "C": "", "D": "", "X": ""}
+    cfg = st.session_state.get(
+        "cfg_shs",
+        {"lunches": dict(default_lunches), "periods": {str(i): "" for i in range(1, 9)}, "study_rooms": dict(default_rooms)},
+    )
+    if "lunches" not in cfg:
+        old_l = cfg.get("lunch", "L2")
+        cfg["lunches"] = {k: old_l for k in ("A", "B", "C", "D", "X")}
+    if "study_rooms" not in cfg:
+        cfg["study_rooms"] = dict(default_rooms)
+    return cfg
 
     col_bells, col_mapper = st.columns([1.8, 1.2])
 
