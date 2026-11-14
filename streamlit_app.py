@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 st.set_page_config(
     page_title="Assignment Tracker",
@@ -1294,12 +1294,32 @@ def build_shs_bell_blocks(
 # -----------------------
 def _get_database_url() -> str:
     url = ""
+    secret_keys = (
+        "DATABASE_URL",
+        "DB_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+        "SUPABASE_DB_URL",
+        "SQLALCHEMY_DATABASE_URI",
+    )
     try:
-        url = str(st.secrets.get("DATABASE_URL", "")).strip()
+        for key in secret_keys:
+            val = st.secrets.get(key, "")
+            if val:
+                url = str(val).strip()
+                break
+        if not url and "connections" in st.secrets:
+            pg = st.secrets["connections"].get("postgresql", {})
+            if isinstance(pg, dict) and pg.get("url"):
+                url = str(pg["url"]).strip()
     except Exception:
         pass
     if not url:
-        url = str(os.environ.get("DATABASE_URL", "")).strip()
+        for key in secret_keys:
+            val = os.environ.get(key, "")
+            if val:
+                url = str(val).strip()
+                break
     if not url:
         return "sqlite:///assignments_local.db"
     if url.startswith("postgres://"):
@@ -1857,38 +1877,126 @@ def normalize_login_email(raw_email: str) -> str:
     return e
 
 
+def _get_users_table_columns() -> List[str]:
+    try:
+        cols = inspect(engine).get_columns("users")
+        return [str(c["name"]).lower() for c in cols]
+    except Exception:
+        return ["id", "email", "password_hash", "created_at"]
+
+
+def _verify_password_compat(plain_pw: str, stored_pw: str, salt: str = "") -> bool:
+    if not plain_pw or not stored_pw:
+        return False
+    if stored_pw == _hash_pw(plain_pw) or stored_pw == plain_pw:
+        return True
+    if salt:
+        if stored_pw in (_hash_pw(salt + plain_pw), _hash_pw(plain_pw + salt)):
+            return True
+    for sep in ("$", ":"):
+        if sep in stored_pw and not stored_pw.startswith(("pbkdf2:", "scrypt:", "$2a$", "$2b$", "$2y$")):
+            parts = stored_pw.split(sep, 1)
+            if len(parts) == 2 and parts[1] in (_hash_pw(parts[0] + plain_pw), _hash_pw(plain_pw + parts[0])):
+                return True
+    if stored_pw.startswith(("pbkdf2:", "scrypt:")):
+        try:
+            from werkzeug.security import check_password_hash
+            return check_password_hash(stored_pw, plain_pw)
+        except Exception:
+            pass
+    if stored_pw.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(plain_pw.encode("utf-8"), stored_pw.encode("utf-8"))
+        except Exception:
+            pass
+    return False
+
+
 def authenticate_user(email: str, password: str) -> Optional[Dict[str, str]]:
+    raw_clean = str(email or "").strip().lower()
     norm_email = normalize_login_email(email)
-    if not norm_email or not password:
+    if not raw_clean or not password:
         return None
-    pw_h = _hash_pw(password)
+
+    candidates = list(dict.fromkeys([c for c in (norm_email, raw_clean) if c]))
+    user_cols = _get_users_table_columns()
+    id_cols = [c for c in ("email", "username", "user_email") if c in user_cols] or ["email"]
+    pw_cols = [c for c in ("password_hash", "password", "pw_hash", "hashed_password") if c in user_cols]
+
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT id, email, password_hash FROM users WHERE email = :em"),
-            {"em": norm_email},
-        ).mappings().first()
-    if row and row["password_hash"] == pw_h:
-        return {"id": str(row["id"]), "email": str(row["email"])}
+        for id_col in id_cols:
+            for cand in candidates:
+                row = conn.execute(
+                    text(f"SELECT * FROM users WHERE LOWER({id_col}) = :em"),
+                    {"em": cand},
+                ).mappings().first()
+                if row:
+                    r_dict = dict(row)
+                    salt_val = str(r_dict.get("salt") or "")
+                    for p_col in pw_cols:
+                        stored_pw = str(r_dict.get(p_col) or "")
+                        if _verify_password_compat(password, stored_pw, salt=salt_val):
+                            disp_email = str(
+                                r_dict.get("email")
+                                or r_dict.get("username")
+                                or r_dict.get("user_email")
+                                or cand
+                            )
+                            return {"id": str(r_dict["id"]), "email": disp_email}
     return None
 
 
 def register_user(email: str, password: str) -> Tuple[bool, str]:
+    raw_clean = str(email or "").strip().lower()
     norm_email = normalize_login_email(email)
     if not norm_email or len(password) < 4:
         return False, "Enter a valid username/email and a password (at least 4 characters)."
+
+    candidates = list(dict.fromkeys([c for c in (norm_email, raw_clean) if c]))
+    user_cols = _get_users_table_columns()
+    id_cols = [c for c in ("email", "username", "user_email") if c in user_cols] or ["email"]
+
     with engine.connect() as conn:
-        existing = conn.execute(
-            text("SELECT id FROM users WHERE email = :em"),
-            {"em": norm_email},
-        ).first()
-        if existing:
-            return False, "An account with that email already exists. Try signing in."
+        for id_col in id_cols:
+            for cand in candidates:
+                existing = conn.execute(
+                    text(f"SELECT id FROM users WHERE LOWER({id_col}) = :em"),
+                    {"em": cand},
+                ).first()
+                if existing:
+                    return False, "An account with that email/username already exists. Try signing in."
+
     new_id = str(uuid.uuid4())
     now_iso = get_local_now().isoformat()
+    pw_hashed = _hash_pw(password)
+
+    insert_cols = ["id"]
+    insert_vals: Dict[str, Any] = {"id": new_id}
+
+    if "email" in user_cols:
+        insert_cols.append("email")
+        insert_vals["email"] = norm_email
+    if "username" in user_cols:
+        insert_cols.append("username")
+        insert_vals["username"] = raw_clean
+    if "password_hash" in user_cols:
+        insert_cols.append("password_hash")
+        insert_vals["password_hash"] = pw_hashed
+    elif "password" in user_cols:
+        insert_cols.append("password")
+        insert_vals["password"] = pw_hashed
+    if "created_at" in user_cols:
+        insert_cols.append("created_at")
+        insert_vals["created_at"] = now_iso
+
+    cols_sql = ", ".join(insert_cols)
+    params_sql = ", ".join(f":{c}" for c in insert_cols)
+
     with engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO users (id, email, password_hash, created_at) VALUES (:id, :em, :pw, :ca)"),
-            {"id": new_id, "em": norm_email, "pw": _hash_pw(password), "ca": now_iso},
+            text(f"INSERT INTO users ({cols_sql}) VALUES ({params_sql})"),
+            insert_vals,
         )
     return True, norm_email
 
@@ -2421,7 +2529,7 @@ def render_assignment_grid_fragment(
                 safe_rerun("app")
 
     if df.empty:
-        st.info("No assignments yet! Click **+ Add Assignment** at the top to add your first task.")
+        st.info("No assignments yet! Click **+ Add Task** at the top to add your first task.")
         return
 
     active_df = df[df["status"] != "Done"].copy()
@@ -2959,7 +3067,11 @@ def render_auth_screen() -> None:
                 l_email = st.text_input("School Username or Email", placeholder="e.g., jsmith or jsmith@simsburyschools.net")
                 l_pw = st.text_input("Password", type="password")
                 if st.form_submit_button("Sign In", use_container_width=True):
-                    user_obj = authenticate_user(l_email, l_pw)
+                    try:
+                        user_obj = authenticate_user(l_email, l_pw)
+                    except Exception as e:
+                        st.error(f"Database connection error: {e}")
+                        user_obj = None
                     if user_obj:
                         clear_all_session_caches()
                         st.session_state["auth_user"] = user_obj
@@ -2976,7 +3088,10 @@ def render_auth_screen() -> None:
                     if s_pw != s_pw2:
                         st.error("Passwords do not match.")
                     else:
-                        ok, msg = register_user(s_email, s_pw)
+                        try:
+                            ok, msg = register_user(s_email, s_pw)
+                        except Exception as e:
+                            ok, msg = False, f"Database connection error: {e}"
                         if ok:
                             user_obj = authenticate_user(msg, s_pw)
                             if user_obj:
