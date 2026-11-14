@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
 
 st.set_page_config(
     page_title="Assignment Tracker",
@@ -857,40 +857,26 @@ def build_theme_css(theme_cfg: Dict[str, Any]) -> str:
     for token, val in replacements.items():
         out = out.replace(token, val)
     return out# -----------------------
-# Photo Upload Encoder & App Constants
+# Application Constants
 # -----------------------
-def encode_uploaded_photo_to_data_uri(uploaded_file) -> str:
-    if uploaded_file is None:
-        return ""
-    raw_bytes = uploaded_file.getvalue()
-    mime = uploaded_file.type or "image/jpeg"
-    if HAS_PIL:
-        try:
-            img = Image.open(io.BytesIO(raw_bytes))
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGB")
-            img.thumbnail((1920, 1080))
-            buf = io.BytesIO()
-            if img.mode == "RGBA":
-                img.save(buf, format="PNG", optimize=True)
-                mime = "image/png"
-            else:
-                img.save(buf, format="JPEG", quality=82, optimize=True)
-                mime = "image/jpeg"
-            raw_bytes = buf.getvalue()
-        except Exception:
-            pass
-    b64_str = base64.b64encode(raw_bytes).decode("ascii")
-    return f"data:{mime};base64,{b64_str}"
-
-
 DEFAULT_DOMAIN = "@simsburyschools.net"
-STATUS_OPTIONS = ["Not Started", "In Progress", "Halfway Done", "Almost Done", "Done"]
+STATUS_OPTIONS = ["Not Started", "In Progress", "Done"]
+TYPE_OPTIONS = ["Homework", "Essay", "Presentation", "Test & Quizzes", "Other"]
 PRIORITY_OPTIONS = ["Low", "Medium", "High"]
 PRIORITY_SYSTEM_MODES = ["Low / Medium / High", "1 to 10 Scale (Slider)", "Both Systems"]
-TYPE_OPTIONS = ["Homework", "Project", "Test & Quizzes", "Essay", "Lab", "Other"]
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-STUDY_KEYWORDS = ("study", "studying", "review", "prep", "prepare", "practice", "flashcard", "memorize", "quizlet")
+
+SYSTEM_TITLES = {
+    "__SYSTEM_COURSES__",
+    "__SYSTEM_SCHEDULE__",
+    "__SYSTEM_PRIO_CONFIG__",
+    "__SYSTEM_MAX_WORK_CONFIG__",
+    "__SYSTEM_COMPLETED_SLOTS__",
+    "__SYSTEM_SEEN_UPDATES__",
+    "__SYSTEM_THEME_CONFIG__",
+    "__SYSTEM_SHS_CONFIG__",
+}
+
 
 # -----------------------
 # SHS Bell Schedule & Live Spreadsheet Calendar Engine
@@ -959,9 +945,7 @@ def _normalize_google_sheet_csv_url(raw_url: str) -> str:
     if not url:
         return ""
     if "docs.google.com/spreadsheets" in url:
-        if "/pub?" in url and "output=csv" in url:
-            return url
-        if "/export?" in url and "format=csv" in url:
+        if ("/pub?" in url and "output=csv" in url) or ("/export?" in url and "format=csv" in url):
             return url
         m_id = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
         m_gid = re.search(r"[?#&]gid=(\d+)", url)
@@ -1039,7 +1023,6 @@ def _extract_letter_and_sched(text_blob: str) -> Optional[Dict[str, str]]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_live_shs_spreadsheet_map(sheet_url: str) -> Dict[str, Dict[str, str]]:
-    """Fetches and parses live letter-day rows from a published/shared Google Spreadsheet CSV."""
     csv_url = _normalize_google_sheet_csv_url(sheet_url)
     if not csv_url:
         return {}
@@ -1086,7 +1069,6 @@ def get_default_shs_sheet_url() -> str:
 
 
 def get_shs_day_info(target_date: date, custom_sheet_url: str = "") -> Dict[str, str]:
-    """Resolves the letter day & schedule for target_date: checks live spreadsheet first, then built-in 2026-2027 SHS calendar."""
     iso_key = target_date.isoformat()
     active_url = str(custom_sheet_url or "").strip() or get_default_shs_sheet_url()
 
@@ -1130,7 +1112,6 @@ def build_shs_bell_blocks(
     period_classes: Dict[str, str],
     study_rooms: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, str]]:
-    """Builds exact period-by-period bell blocks from all 8 official SHS schedules."""
     l_clean = letter_day if letter_day in ("A", "B", "C", "D") else "A"
     rot = SHS_ROTATIONS[l_clean]
     rooms_map = study_rooms or {}
@@ -1289,52 +1270,56 @@ def build_shs_bell_blocks(
         {"label": f"Period {rot[4]}", "class_name": _cls(rot[4]), "start": "12:12 PM", "end": "1:09 PM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[4])},
         {"label": f"Period {rot[5]}", "class_name": _cls(rot[5]), "start": "1:13 PM", "end": "2:10 PM", "mins": "57m", "is_lunch": "0", "ann": "0", "room": _room_for(rot[5])},
     ])
-    return blocks# -----------------------
+    return blocks
+
+
+# -----------------------
 # Database Engine & Thread-Safe Background Worker
 # -----------------------
-def _get_database_url() -> str:
+def get_connection_url() -> str:
     url = ""
-    secret_keys = (
-        "DATABASE_URL",
-        "DB_URL",
-        "POSTGRES_URL",
-        "POSTGRESQL_URL",
-        "SUPABASE_DB_URL",
-        "SQLALCHEMY_DATABASE_URI",
-    )
-    try:
-        for key in secret_keys:
-            val = st.secrets.get(key, "")
-            if val:
-                url = str(val).strip()
-                break
-        if not url and "connections" in st.secrets:
-            pg = st.secrets["connections"].get("postgresql", {})
-            if isinstance(pg, dict) and pg.get("url"):
-                url = str(pg["url"]).strip()
-    except Exception:
-        pass
-    if not url:
-        for key in secret_keys:
-            val = os.environ.get(key, "")
-            if val:
-                url = str(val).strip()
-                break
-    if not url:
-        return "sqlite:///assignments_local.db"
+    if "postgres" in st.secrets and "url" in st.secrets["postgres"]:
+        url = st.secrets["postgres"]["url"]
+    elif "connections" in st.secrets and "neon" in st.secrets["connections"]:
+        url = st.secrets["connections"]["neon"]["url"]
+    elif "DATABASE_URL" in st.secrets:
+        url = st.secrets["DATABASE_URL"]
+    else:
+        raise ValueError("Missing PostgreSQL database URL in secrets configuration.")
     if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
     return url
 
 
 @st.cache_resource
 def get_db_engine():
-    db_url = _get_database_url()
-    if db_url.startswith("sqlite"):
-        eng = create_engine(db_url, connect_args={"check_same_thread": False}, future=True)
-    else:
-        eng = create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10, future=True)
-    with eng.begin() as conn:
+    return create_engine(get_connection_url(), pool_pre_ping=True, pool_size=5, max_overflow=10)
+
+
+@st.cache_resource
+def get_db_write_lock() -> threading.Lock:
+    return threading.Lock()
+
+
+engine = get_db_engine()
+db_write_lock = get_db_write_lock()
+
+
+def _run_bg_sql(worker_fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+    def _target():
+        with db_write_lock:
+            try:
+                worker_fn(*args, **kwargs)
+            except Exception:
+                pass
+    threading.Thread(target=_target, daemon=True).start()
+
+
+@st.cache_resource
+def init_db_once():
+    with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -1347,16 +1332,15 @@ def get_db_engine():
             CREATE TABLE IF NOT EXISTS assignments (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                title TEXT NOT NULL,
+                title TEXT,
                 course TEXT,
                 due_date TEXT,
                 status TEXT,
                 priority INTEGER,
                 atype TEXT,
                 eta TEXT,
-                created_at TEXT,
                 notes TEXT,
-                prev_status TEXT
+                created_at TEXT
             );
         """))
         conn.execute(text("""
@@ -1370,32 +1354,29 @@ def get_db_engine():
                 created_at TEXT NOT NULL
             );
         """))
-    return eng
+    return True
 
 
-engine = get_db_engine()
-_DB_WRITE_LOCK = threading.Lock()
-
-
-def _run_bg_db_task(fn: Callable[[], None]) -> None:
-    def _worker():
-        with _DB_WRITE_LOCK:
-            try:
-                fn()
-            except Exception as e:
-                print(f"[DB Background Write Error] {e}")
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-
-def _hash_pw(pw: str) -> str:
-    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+try:
+    init_db_once()
+except Exception as e:
+    st.error(f"Database Connection Error: {e}")
 
 
 # -----------------------
-# UI Badges, Priority & Duration Helpers
+# Helper Utilities
 # -----------------------
+def format_mins_to_hrs_mins(mins: int) -> str:
+    if mins <= 0:
+        return "0 mins"
+    h, m = mins // 60, mins % 60
+    if h == 0:
+        return f"{m} mins"
+    if m == 0:
+        return f"{h} hr" if h == 1 else f"{h} hrs"
+    return f"{h} hr {m} mins" if h == 1 else f"{h} hrs {m} mins"
+
+
 def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
     c = str(course_name or "GENERAL").strip().upper()
     if is_light:
@@ -1436,138 +1417,165 @@ def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
     )
 
 
-def priority_to_int(val: Any) -> int:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return 5
-    if isinstance(val, (int, float)):
-        return max(1, min(10, int(val)))
-    s = str(val).strip().lower()
-    if s.isdigit():
-        return max(1, min(10, int(s)))
-    if s == "high":
-        return 8
-    if s == "low":
-        return 2
-    return 5
-
-
 def priority_to_label(val: Any) -> str:
-    n = priority_to_int(val)
-    if n >= 7:
-        return "High"
-    if n <= 3:
-        return "Low"
-    return "Medium"
+    if pd.isna(val) or val is None:
+        return "Medium"
+    if isinstance(val, (int, float)):
+        v = int(val)
+        return "Low" if v <= 3 else ("Medium" if v <= 7 else "High")
+    s = str(val).strip().title()
+    if s in PRIORITY_OPTIONS:
+        return s
+    return priority_to_label(int(s)) if s.isdigit() else "Medium"
+
+
+def priority_to_int(label_or_val: Any) -> int:
+    if isinstance(label_or_val, (int, float)):
+        return max(1, min(10, int(label_or_val)))
+    return {"Low": 2, "Medium": 5, "High": 9}.get(str(label_or_val).strip().title(), 5)
 
 
 def format_priority_display(val: Any, mode: str) -> str:
-    n = priority_to_int(val)
-    lbl = priority_to_label(n)
+    p_num = priority_to_int(val)
+    p_label = priority_to_label(p_num)
     if mode == "1 to 10 Scale (Slider)":
-        return f"{n}/10"
+        return f"{p_num}/10"
     if mode == "Both Systems":
-        return f"{lbl} ({n}/10)"
-    return lbl
+        return f"{p_label} ({p_num}/10)"
+    return p_label
 
 
-def parse_eta_to_mins(eta_str: str) -> int:
-    if not eta_str or pd.isna(eta_str):
+def parse_eta_to_mins(eta_raw: Any) -> int:
+    if not eta_raw or pd.isna(eta_raw):
         return 30
-    s = str(eta_str).lower().strip()
-    s = re.sub(r"(/day|per day|daily|a day)", "", s).strip()
-    total = 0
-    hr_m = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", s)
-    min_m = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)", s)
-    if hr_m:
-        total += int(float(hr_m.group(1)) * 60)
-    if min_m:
-        total += int(float(min_m.group(1)))
-    if not hr_m and not min_m:
-        num_m = re.search(r"(\d+(?:\.\d+)?)", s)
-        if num_m:
-            v = float(num_m.group(1))
-            total = int(v * 60) if v <= 5 else int(v)
-    return max(10, total) if total > 0 else 30
+    s = str(eta_raw).lower().strip()
+    nums = [int(n) for n in re.findall(r"\d+", s)]
+    if not nums:
+        return 30
+    return max(15, nums[0] * 60) if ("hr" in s or "hour" in s) else max(10, nums[0])
 
 
-def format_mins_to_hrs_mins(mins: int) -> str:
-    m = max(0, int(mins))
-    if m == 0:
-        return "0m"
-    h, rem = divmod(m, 60)
-    if h > 0 and rem > 0:
-        return f"{h}h {rem}m"
-    if h > 0:
-        return f"{h}h"
-    return f"{rem}m"
+def is_study_task(atype: str, title: str, notes: str) -> bool:
+    content = f"{atype} {title} {notes}".lower()
+    return any(kw in content for kw in ["study", "studying", "review", "prep", "prepping", "practice", "flashcard", "quiz", "test", "exam"])
 
 
-def is_study_task(atype: str, title: str, notes: str = "") -> bool:
-    if str(atype or "").strip() == "Test & Quizzes":
-        return True
-    blob = f"{title} {notes}".lower()
-    return any(k in blob for k in STUDY_KEYWORDS)
+def is_daily_recurring_task(eta_raw: Any, title: str, notes: str) -> bool:
+    content = f"{str(eta_raw)} {title} {notes}".lower()
+    return any(kw in content for kw in ["/day", "per day", "a day", "daily", "every day", "each day", "per-day", "/ d"])
 
 
-def is_daily_recurring_task(eta_str: str, title: str = "", notes: str = "") -> bool:
-    blob = f"{eta_str} {title} {notes}".lower()
-    return any(k in blob for k in ("/day", "per day", "daily", "each day", "every day"))
+def format_study_display_title(raw_title: str) -> str:
+    t_lower = raw_title.lower()
+    return raw_title if any(w in t_lower for w in ["study", "review", "prep", "practice", "flashcard"]) else f"Study for {raw_title}"
 
 
-def format_study_display_title(title: str) -> str:
-    t = str(title or "").strip()
-    if t.lower().startswith("study"):
-        return t
-    return f"Study: {t}"
+def encode_uploaded_photo_to_data_uri(uploaded_file: Any) -> str:
+    raw_bytes = uploaded_file.getvalue()
+    if HAS_PIL:
+        try:
+            img = Image.open(io.BytesIO(raw_bytes))
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            if max(img.size) > 1280:
+                img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=72, optimize=True)
+            return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        except Exception:
+            pass
+    mime = getattr(uploaded_file, "type", "image/jpeg") or "image/jpeg"
+    return f"data:{mime};base64,{base64.b64encode(raw_bytes).decode('ascii')}"
 
 
+def _cfg_uuid(prefix: str, user_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{prefix}_{user_id}"))
+
+
+def _pack_notes(notes_text: str, prev_status: str) -> str:
+    return json.dumps({"text": notes_text, "prev_status": prev_status})
+
+
+def _unpack_notes(raw_notes: Any) -> Tuple[str, str]:
+    if not raw_notes or pd.isna(raw_notes):
+        return ("", "Not Started")
+    try:
+        data = json.loads(str(raw_notes))
+        if isinstance(data, dict):
+            return (data.get("text", ""), data.get("prev_status", "Not Started"))
+    except Exception:
+        pass
+    return (str(raw_notes), "Not Started")
+
+
+def _hash_pw(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()# -----------------------
+# Single-Query Hydration & Background DB Writers
 # -----------------------
-# Session Hydration, Cache Getters & Config Writers
-# -----------------------
-ASSIGNMENT_COLS = [
-    "id", "user_id", "title", "course", "due_date", "status",
-    "priority", "atype", "eta", "created_at", "notes", "prev_status",
-]
-
-SYSTEM_TITLES = {
-    "__SYSTEM_COURSES_CONFIG__",
-    "__SYSTEM_SCHEDULE_CONFIG__",
-    "__SYSTEM_PRIO_CONFIG__",
-    "__SYSTEM_MAX_WORK_CONFIG__",
-    "__SYSTEM_COMPLETED_SLOTS__",
-    "__SYSTEM_SEEN_UPDATES__",
-    "__SYSTEM_THEME_CONFIG__",
-    "__SYSTEM_SHS_CONFIG__",
-}
-
-
-def clear_all_session_caches() -> None:
+def clear_all_session_caches():
     for k in [
-        "hydrated_uid", "df_cached", "cfg_courses", "cfg_schedule",
-        "cfg_prio", "cfg_max_work", "cfg_completed_slots",
+        "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
+        "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
         "cfg_seen_updates", "cfg_theme", "cfg_shs", "_ai_plan_result",
+        "_undo_slot_state", "_hydrated_uid", "_pending_edit_aid",
     ]:
         st.session_state.pop(k, None)
 
 
+def _db_purge_ids_worker(user_id: str, expired_ids: List[str]) -> None:
+    if not expired_ids:
+        return
+    sql = text("DELETE FROM assignments WHERE user_id = :uid AND id = :id")
+    with engine.begin() as conn:
+        for aid in expired_ids:
+            conn.execute(sql, {"uid": user_id, "id": aid})
+
+
+def _db_upsert_config_worker(cfg_id: str, user_id: str, sys_title: str, notes_payload: str, created_at: str) -> None:
+    sql = text("""
+        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
+        VALUES (:id, :user_id, :title, 'CONFIG', '', 'Not Started', 0, 'Other', '', :notes, :created_at)
+        ON CONFLICT (id) DO UPDATE SET notes = EXCLUDED.notes, user_id = EXCLUDED.user_id;
+    """)
+    with engine.begin() as conn:
+        conn.execute(sql, {"id": cfg_id, "user_id": user_id, "title": sys_title, "notes": notes_payload, "created_at": created_at})
+
+
+def _db_upsert_assignments_worker(db_rows: List[Dict[str, Any]]) -> None:
+    if not db_rows:
+        return
+    sql = text("""
+        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, notes, created_at)
+        VALUES (:id, :user_id, :title, :course, :due_date, :status, :priority, :atype, :eta, :notes, :created_at)
+        ON CONFLICT (id) DO UPDATE SET
+            user_id = EXCLUDED.user_id, title = EXCLUDED.title, course = EXCLUDED.course,
+            due_date = EXCLUDED.due_date, status = EXCLUDED.status, priority = EXCLUDED.priority,
+            atype = EXCLUDED.atype, eta = EXCLUDED.eta, notes = EXCLUDED.notes, created_at = EXCLUDED.created_at;
+    """)
+    with engine.begin() as conn:
+        for row in db_rows:
+            conn.execute(sql, row)
+
+
+def _db_delete_assignment_worker(assignment_id: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM assignments WHERE id = :id"), {"id": assignment_id})
+
+
 def hydrate_user_session(user_id: str, force: bool = False) -> None:
-    if not user_id:
-        return
-    if not force and st.session_state.get("hydrated_uid") == user_id and "df_cached" in st.session_state:
+    if not force and st.session_state.get("_hydrated_uid") == user_id:
         return
 
+    today_iso = get_local_now().date().isoformat()
     with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT * FROM assignments WHERE user_id = :uid"),
-            {"uid": user_id},
-        ).mappings().all()
+        raw_rows = conn.execute(text("SELECT * FROM assignments WHERE user_id = :uid"), {"uid": user_id}).mappings().all()
 
-    courses_list: List[str] = []
-    schedule_list: List[Dict[str, Any]] = []
-    prio_mode: str = ""
-    max_work_dict: Dict[str, int] = {d: 60 for d in DAYS_OF_WEEK}
-    completed_slots: Dict[str, Any] = {}
-    seen_updates: str = ""
+    courses: List[str] = []
+    schedule: List[Dict[str, Any]] = []
+    prio_mode: Optional[str] = None
+    max_work: Dict[str, int] = {d: 60 for d in DAYS_OF_WEEK}
+    completed_slots: Dict[str, Dict[str, Any]] = {}
+    seen_updates_ver: str = ""
     theme_cfg: Dict[str, Any] = dict(DEFAULT_THEME_CONFIG)
     shs_cfg: Dict[str, Any] = {
         "lunches": {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"},
@@ -1576,62 +1584,59 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
         "sheet_url": "",
     }
 
-    today_iso = get_local_now().date().isoformat()
-    task_records: List[Dict[str, Any]] = []
+    assignment_rows: List[Dict[str, Any]] = []
     expired_done_ids: List[str] = []
 
-    for r in rows:
-        r_dict = dict(r)
-        r_title = str(r_dict.get("title") or "")
-        r_notes = str(r_dict.get("notes") or "")
+    for r in raw_rows:
+        r_title = str(r.get("title") or "")
+        r_notes = r.get("notes")
 
-        if r_title == "__SYSTEM_COURSES_CONFIG__":
+        if r_title == "__SYSTEM_COURSES__":
             try:
-                parsed = json.loads(r_notes or "[]")
+                parsed = json.loads(str(r_notes or "[]"))
                 if isinstance(parsed, list):
-                    courses_list = [str(x).strip().upper() for x in parsed if str(x).strip()]
+                    courses = parsed
             except Exception:
                 pass
-        elif r_title == "__SYSTEM_SCHEDULE_CONFIG__":
+        elif r_title == "__SYSTEM_SCHEDULE__":
             try:
-                parsed = json.loads(r_notes or "[]")
+                parsed = json.loads(str(r_notes or "[]"))
                 if isinstance(parsed, list):
-                    schedule_list = parsed
+                    schedule = parsed
             except Exception:
                 pass
         elif r_title == "__SYSTEM_PRIO_CONFIG__":
-            prio_mode = r_notes.strip()
+            val = str(r_notes or "").strip()
+            if val in PRIORITY_SYSTEM_MODES:
+                prio_mode = val
         elif r_title == "__SYSTEM_MAX_WORK_CONFIG__":
             try:
-                parsed = json.loads(r_notes or "{}")
+                parsed = json.loads(str(r_notes or "{}"))
                 if isinstance(parsed, dict):
                     for d in DAYS_OF_WEEK:
-                        if d in parsed:
-                            max_work_dict[d] = int(parsed[d])
+                        if d in parsed and isinstance(parsed[d], int):
+                            max_work[d] = parsed[d]
             except Exception:
                 pass
         elif r_title == "__SYSTEM_COMPLETED_SLOTS__":
             try:
-                parsed = json.loads(r_notes or "{}")
-                if isinstance(parsed, dict):
-                    completed_slots = {
-                        k: v for k, v in parsed.items()
-                        if isinstance(v, dict) and v.get("day_date_str") == today_iso
-                    }
+                parsed = json.loads(str(r_notes or "{}"))
+                if isinstance(parsed, dict) and isinstance(parsed.get(today_iso), dict):
+                    completed_slots = parsed[today_iso]
             except Exception:
                 pass
         elif r_title == "__SYSTEM_SEEN_UPDATES__":
-            seen_updates = r_notes.strip()
+            seen_updates_ver = str(r_notes or "").strip()
         elif r_title == "__SYSTEM_THEME_CONFIG__":
             try:
-                parsed = json.loads(r_notes or "{}")
+                parsed = json.loads(str(r_notes or "{}"))
                 if isinstance(parsed, dict):
                     theme_cfg.update(parsed)
             except Exception:
                 pass
         elif r_title == "__SYSTEM_SHS_CONFIG__":
             try:
-                parsed = json.loads(r_notes or "{}")
+                parsed = json.loads(str(r_notes or "{}"))
                 if isinstance(parsed, dict):
                     if "lunch" in parsed and "lunches" not in parsed:
                         old_l = parsed["lunch"] if parsed["lunch"] in ("L1", "L2", "L3") else "L2"
@@ -1640,66 +1645,52 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
             except Exception:
                 pass
         elif r_title not in SYSTEM_TITLES:
-            due_s = str(r_dict.get("due_date") or "").strip()
-            if r_dict.get("status") == "Done" and due_s and due_s < today_iso:
-                expired_done_ids.append(str(r_dict["id"]))
-            else:
-                task_records.append(r_dict)
+            status_val = str(r.get("status") or "Not Started")
+            due_val = str(r.get("due_date") or "")
+            aid_val = str(r.get("id"))
+            if status_val == "Done" and due_val and due_val < today_iso:
+                expired_done_ids.append(aid_val)
+                continue
+            n_text, prev_st = _unpack_notes(r_notes)
+            assignment_rows.append({
+                "id": aid_val, "user_id": str(r.get("user_id")), "title": r_title,
+                "course": str(r.get("course") or "GENERAL").strip().upper(),
+                "due_date": due_val, "status": status_val,
+                "priority": priority_to_int(r.get("priority")),
+                "atype": str(r.get("atype") or "Homework"),
+                "eta": str(r.get("eta") or ""),
+                "created_at": str(r.get("created_at") or ""),
+                "notes": n_text, "prev_status": prev_st,
+            })
 
     if expired_done_ids:
-        def _cleanup_expired():
-            with engine.begin() as conn:
-                for eid in expired_done_ids:
-                    conn.execute(text("DELETE FROM assignments WHERE id = :id"), {"id": eid})
-        _run_bg_db_task(_cleanup_expired)
+        _run_bg_sql(_db_purge_ids_worker, user_id, expired_done_ids)
 
-    df_tasks = pd.DataFrame(task_records, columns=ASSIGNMENT_COLS) if task_records else pd.DataFrame(columns=ASSIGNMENT_COLS)
-    st.session_state["df_cached"] = df_tasks
-    st.session_state["cfg_courses"] = courses_list
-    st.session_state["cfg_schedule"] = schedule_list
-    st.session_state["cfg_prio"] = prio_mode
-    st.session_state["cfg_max_work"] = max_work_dict
+    cols = ["id", "user_id", "title", "course", "due_date", "status", "priority", "atype", "eta", "created_at", "notes", "prev_status"]
+    st.session_state["df_cached"] = pd.DataFrame(assignment_rows) if assignment_rows else pd.DataFrame(columns=cols)
+    st.session_state["cfg_courses"] = courses
+    st.session_state["cfg_schedule"] = schedule
+    st.session_state["cfg_prio_mode"] = prio_mode
+    st.session_state["cfg_max_work"] = max_work
     st.session_state["cfg_completed_slots"] = completed_slots
-    st.session_state["cfg_seen_updates"] = seen_updates
+    st.session_state["cfg_completed_slots_date"] = today_iso
+    st.session_state["cfg_seen_updates"] = seen_updates_ver
     st.session_state["cfg_theme"] = theme_cfg
     st.session_state["cfg_shs"] = shs_cfg
-    st.session_state["hydrated_uid"] = user_id
+    st.session_state["_hydrated_uid"] = user_id
 
 
-def _upsert_system_config(user_id: str, sys_title: str, notes_payload: str) -> None:
-    sys_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{user_id}:{sys_title}"))
-    now_iso = get_local_now().isoformat()
-
-    def _db_op():
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, created_at, notes, prev_status)
-                    VALUES (:id, :user_id, :title, 'SYSTEM', '', 'Done', 1, 'System', '', :created_at, :notes, 'Done')
-                    ON CONFLICT (id) DO UPDATE SET
-                        notes = EXCLUDED.notes,
-                        created_at = EXCLUDED.created_at
-                """),
-                {"id": sys_id, "user_id": user_id, "title": sys_title, "created_at": now_iso, "notes": notes_payload},
-            )
-
-    _run_bg_db_task(_db_op)
-
-
-def get_assignments_cached(user_id: str) -> pd.DataFrame:
-    hydrate_user_session(user_id)
-    return st.session_state.get("df_cached", pd.DataFrame(columns=ASSIGNMENT_COLS))
-
-
+# -----------------------
+# Instant In-Memory Getters & Optimistic Writers
+# -----------------------
 def get_courses_cached(user_id: str) -> List[str]:
     hydrate_user_session(user_id)
     return st.session_state.get("cfg_courses", [])
 
 
 def _write_courses_file(user_id: str, courses: List[str]) -> None:
-    clean = [str(c).strip().upper() for c in courses if str(c).strip()]
-    st.session_state["cfg_courses"] = clean
-    _upsert_system_config(user_id, "__SYSTEM_COURSES_CONFIG__", json.dumps(clean))
+    st.session_state["cfg_courses"] = courses
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_courses_config", user_id), user_id, "__SYSTEM_COURSES__", json.dumps(courses), get_local_now().isoformat())
 
 
 def get_schedule_cached(user_id: str) -> List[Dict[str, Any]]:
@@ -1710,38 +1701,18 @@ def get_schedule_cached(user_id: str) -> List[Dict[str, Any]]:
 def _write_schedule_file(user_id: str, schedule: List[Dict[str, Any]]) -> None:
     st.session_state["cfg_schedule"] = schedule
     st.session_state.pop("_ai_plan_result", None)
-    _upsert_system_config(user_id, "__SYSTEM_SCHEDULE_CONFIG__", json.dumps(schedule))
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_schedule_config", user_id), user_id, "__SYSTEM_SCHEDULE__", json.dumps(schedule), get_local_now().isoformat())
 
 
-def get_prio_cached(user_id: str) -> str:
+def get_prio_cached(user_id: str) -> Optional[str]:
     hydrate_user_session(user_id)
-    return st.session_state.get("cfg_prio", "")
+    return st.session_state.get("cfg_prio_mode")
 
 
-def _write_prio_config(user_id: str, prio_mode: str) -> None:
-    st.session_state["cfg_prio"] = prio_mode
-    _upsert_system_config(user_id, "__SYSTEM_PRIO_CONFIG__", prio_mode)
-
-
-def get_max_work_cached(user_id: str) -> Dict[str, int]:
-    hydrate_user_session(user_id)
-    return st.session_state.get("cfg_max_work", {d: 60 for d in DAYS_OF_WEEK})
-
-
-def _write_max_work_config(user_id: str, max_work: Dict[str, int]) -> None:
-    st.session_state["cfg_max_work"] = max_work
-    st.session_state.pop("_ai_plan_result", None)
-    _upsert_system_config(user_id, "__SYSTEM_MAX_WORK_CONFIG__", json.dumps(max_work))
-
-
-def get_completed_slots_cached(user_id: str) -> Dict[str, Any]:
-    hydrate_user_session(user_id)
-    return st.session_state.get("cfg_completed_slots", {})
-
-
-def _write_completed_slots(user_id: str, slots_dict: Dict[str, Any]) -> None:
-    st.session_state["cfg_completed_slots"] = slots_dict
-    _upsert_system_config(user_id, "__SYSTEM_COMPLETED_SLOTS__", json.dumps(slots_dict))
+def _write_prio_config(user_id: str, mode: str) -> None:
+    if mode in PRIORITY_SYSTEM_MODES:
+        st.session_state["cfg_prio_mode"] = mode
+        _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_prio_config", user_id), user_id, "__SYSTEM_PRIO_CONFIG__", mode, get_local_now().isoformat())
 
 
 def get_seen_updates_cached(user_id: str) -> str:
@@ -1749,9 +1720,9 @@ def get_seen_updates_cached(user_id: str) -> str:
     return st.session_state.get("cfg_seen_updates", "")
 
 
-def _write_seen_updates(user_id: str, ver: str) -> None:
-    st.session_state["cfg_seen_updates"] = ver
-    _upsert_system_config(user_id, "__SYSTEM_SEEN_UPDATES__", ver)
+def _write_seen_updates(user_id: str, version_str: str) -> None:
+    st.session_state["cfg_seen_updates"] = version_str
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_seen_updates_config", user_id), user_id, "__SYSTEM_SEEN_UPDATES__", version_str, get_local_now().isoformat())
 
 
 def get_theme_cached(user_id: str) -> Dict[str, Any]:
@@ -1761,7 +1732,7 @@ def get_theme_cached(user_id: str) -> Dict[str, Any]:
 
 def _write_theme_config(user_id: str, theme_cfg: Dict[str, Any]) -> None:
     st.session_state["cfg_theme"] = theme_cfg
-    _upsert_system_config(user_id, "__SYSTEM_THEME_CONFIG__", json.dumps(theme_cfg))
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_theme_config", user_id), user_id, "__SYSTEM_THEME_CONFIG__", json.dumps(theme_cfg), get_local_now().isoformat())
 
 
 def get_shs_cached(user_id: str) -> Dict[str, Any]:
@@ -1789,216 +1760,133 @@ def get_shs_cached(user_id: str) -> Dict[str, Any]:
 
 def _write_shs_config(user_id: str, shs_cfg: Dict[str, Any]) -> None:
     st.session_state["cfg_shs"] = shs_cfg
-    _upsert_system_config(user_id, "__SYSTEM_SHS_CONFIG__", json.dumps(shs_cfg))
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_shs_config", user_id), user_id, "__SYSTEM_SHS_CONFIG__", json.dumps(shs_cfg), get_local_now().isoformat())
 
 
-def upsert_assignments(rows: List[Dict[str, Any]]) -> None:
-    if not rows:
+def get_max_work_cached(user_id: str) -> Dict[str, int]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_max_work", {d: 60 for d in DAYS_OF_WEEK})
+
+
+def _write_max_work_config(user_id: str, max_mins_dict: Dict[str, int]) -> None:
+    st.session_state["cfg_max_work"] = max_mins_dict
+    st.session_state.pop("_ai_plan_result", None)
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_max_work_config", user_id), user_id, "__SYSTEM_MAX_WORK_CONFIG__", json.dumps(max_mins_dict), get_local_now().isoformat())
+
+
+def get_completed_slots_cached(user_id: str) -> Dict[str, Dict[str, Any]]:
+    hydrate_user_session(user_id)
+    today_str = get_local_now().date().isoformat()
+    if st.session_state.get("cfg_completed_slots_date") != today_str:
+        st.session_state["cfg_completed_slots"] = {}
+        st.session_state["cfg_completed_slots_date"] = today_str
+    return st.session_state.get("cfg_completed_slots", {})
+
+
+def _write_completed_slots(user_id: str, today_slots: Dict[str, Dict[str, Any]]) -> None:
+    today_str = get_local_now().date().isoformat()
+    st.session_state["cfg_completed_slots"] = today_slots
+    st.session_state["cfg_completed_slots_date"] = today_str
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_completed_slots_config", user_id), user_id, "__SYSTEM_COMPLETED_SLOTS__", json.dumps({today_str: today_slots}), get_local_now().isoformat())
+
+
+def get_assignments_cached(user_id: str) -> pd.DataFrame:
+    hydrate_user_session(user_id)
+    return st.session_state["df_cached"]
+
+
+def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
+    if not rows_to_upsert:
         return
-    df = st.session_state.get("df_cached", pd.DataFrame(columns=ASSIGNMENT_COLS)).copy()
-    for r in rows:
-        clean_r = {col: r.get(col, "") for col in ASSIGNMENT_COLS}
-        clean_r["priority"] = priority_to_int(clean_r.get("priority"))
-        aid = clean_r["id"]
-        if not df.empty and (df["id"] == aid).any():
-            for col in ASSIGNMENT_COLS:
-                df.loc[df["id"] == aid, col] = clean_r[col]
-        else:
-            df = pd.concat([df, pd.DataFrame([clean_r])], ignore_index=True)
+    normalized_rows, db_payloads = [], []
+    for row in rows_to_upsert:
+        n_text = str(row.get("notes", "")).strip()
+        prev_st = str(row.get("prev_status", "Not Started"))
+        clean_row = {
+            "id": str(row.get("id")), "user_id": str(row.get("user_id")),
+            "title": str(row.get("title", "")).strip() or "Untitled Assignment",
+            "course": str(row.get("course", "GENERAL")).strip().upper(),
+            "due_date": str(row.get("due_date") or ""),
+            "status": str(row.get("status", "Not Started")),
+            "priority": priority_to_int(row.get("priority")),
+            "atype": str(row.get("atype", "Homework")),
+            "eta": str(row.get("eta", "")).strip(),
+            "notes": n_text,
+            "created_at": str(row.get("created_at") or get_local_now().isoformat()),
+            "prev_status": prev_st,
+        }
+        normalized_rows.append(clean_row)
+        db_payloads.append({**clean_row, "notes": _pack_notes(n_text, prev_st)})
 
-    st.session_state["df_cached"] = df
+    if "df_cached" in st.session_state:
+        df = st.session_state["df_cached"]
+        for c_row in normalized_rows:
+            if df.empty:
+                df = pd.DataFrame([c_row])
+            elif (df["id"] == c_row["id"]).any():
+                idx = df.index[df["id"] == c_row["id"]][0]
+                for col, val in c_row.items():
+                    df.at[idx, col] = val
+            else:
+                df = pd.concat([df, pd.DataFrame([c_row])], ignore_index=True)
+        st.session_state["df_cached"] = df
+
     st.session_state.pop("_ai_plan_result", None)
-
-    rows_copy = [dict(r) for r in rows]
-
-    def _db_op():
-        with engine.begin() as conn:
-            for r in rows_copy:
-                conn.execute(
-                    text("""
-                        INSERT INTO assignments (id, user_id, title, course, due_date, status, priority, atype, eta, created_at, notes, prev_status)
-                        VALUES (:id, :user_id, :title, :course, :due_date, :status, :priority, :atype, :eta, :created_at, :notes, :prev_status)
-                        ON CONFLICT (id) DO UPDATE SET
-                            title = EXCLUDED.title,
-                            course = EXCLUDED.course,
-                            due_date = EXCLUDED.due_date,
-                            status = EXCLUDED.status,
-                            priority = EXCLUDED.priority,
-                            atype = EXCLUDED.atype,
-                            eta = EXCLUDED.eta,
-                            notes = EXCLUDED.notes,
-                            prev_status = EXCLUDED.prev_status
-                    """),
-                    {
-                        "id": r.get("id"),
-                        "user_id": r.get("user_id"),
-                        "title": r.get("title", "Untitled"),
-                        "course": r.get("course", "GENERAL"),
-                        "due_date": str(r.get("due_date") or ""),
-                        "status": r.get("status", "Not Started"),
-                        "priority": priority_to_int(r.get("priority")),
-                        "atype": r.get("atype", "Homework"),
-                        "eta": str(r.get("eta") or ""),
-                        "created_at": str(r.get("created_at") or get_local_now().isoformat()),
-                        "notes": str(r.get("notes") or ""),
-                        "prev_status": str(r.get("prev_status") or "Not Started"),
-                    },
-                )
-
-    _run_bg_db_task(_db_op)
+    _run_bg_sql(_db_upsert_assignments_worker, db_payloads)
 
 
-def delete_assignment(aid: str) -> None:
-    df = st.session_state.get("df_cached", pd.DataFrame(columns=ASSIGNMENT_COLS))
-    if not df.empty:
-        st.session_state["df_cached"] = df[df["id"] != aid].reset_index(drop=True)
+def delete_assignment(assignment_id: str) -> None:
+    if "df_cached" in st.session_state and not st.session_state["df_cached"].empty:
+        df = st.session_state["df_cached"]
+        st.session_state["df_cached"] = df[df["id"] != assignment_id].reset_index(drop=True)
     st.session_state.pop("_ai_plan_result", None)
-
-    def _db_op():
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM assignments WHERE id = :id"), {"id": aid})
-
-    _run_bg_db_task(_db_op)
+    _run_bg_sql(_db_delete_assignment_worker, assignment_id)
 
 
-def restore_single_assignment(row_dict: Dict[str, Any]) -> None:
-    updated = dict(row_dict)
-    prev_st = str(updated.get("prev_status") or "Not Started").strip()
-    updated["status"] = "Not Started" if (not prev_st or prev_st == "Done") else prev_st
-    upsert_assignments([updated])# -----------------------
-# Authentication & Feedback Persistence
+def restore_single_assignment(row_dict: Dict[str, Any]):
+    aid = str(row_dict.get("id"))
+    prev_st = row_dict.get("prev_status") or "In Progress"
+    if prev_st == "Done":
+        prev_st = "In Progress"
+    row_dict["status"] = prev_st
+    upsert_assignments([row_dict])
+    for key in list(st.session_state.keys()):
+        if aid in key:
+            if "chk_done" in key:
+                st.session_state[key] = False
+            elif "status_sel" in key:
+                st.session_state[key] = prev_st
+
+
 # -----------------------
-def normalize_login_email(raw_email: str) -> str:
-    e = str(raw_email or "").strip().lower()
-    if not e:
-        return ""
-    if "@" not in e:
-        e = f"{e}{DEFAULT_DOMAIN}"
-    return e
-
-
-def _get_users_table_columns() -> List[str]:
-    try:
-        cols = inspect(engine).get_columns("users")
-        return [str(c["name"]).lower() for c in cols]
-    except Exception:
-        return ["id", "email", "password_hash", "created_at"]
-
-
-def _verify_password_compat(plain_pw: str, stored_pw: str, salt: str = "") -> bool:
-    if not plain_pw or not stored_pw:
-        return False
-    if stored_pw == _hash_pw(plain_pw) or stored_pw == plain_pw:
-        return True
-    if salt:
-        if stored_pw in (_hash_pw(salt + plain_pw), _hash_pw(plain_pw + salt)):
-            return True
-    for sep in ("$", ":"):
-        if sep in stored_pw and not stored_pw.startswith(("pbkdf2:", "scrypt:", "$2a$", "$2b$", "$2y$")):
-            parts = stored_pw.split(sep, 1)
-            if len(parts) == 2 and parts[1] in (_hash_pw(parts[0] + plain_pw), _hash_pw(plain_pw + parts[0])):
-                return True
-    if stored_pw.startswith(("pbkdf2:", "scrypt:")):
-        try:
-            from werkzeug.security import check_password_hash
-            return check_password_hash(stored_pw, plain_pw)
-        except Exception:
-            pass
-    if stored_pw.startswith(("$2a$", "$2b$", "$2y$")):
-        try:
-            import bcrypt
-            return bcrypt.checkpw(plain_pw.encode("utf-8"), stored_pw.encode("utf-8"))
-        except Exception:
-            pass
-    return False
-
-
-def authenticate_user(email: str, password: str) -> Optional[Dict[str, str]]:
-    raw_clean = str(email or "").strip().lower()
-    norm_email = normalize_login_email(email)
-    if not raw_clean or not password:
-        return None
-
-    candidates = list(dict.fromkeys([c for c in (norm_email, raw_clean) if c]))
-    user_cols = _get_users_table_columns()
-    id_cols = [c for c in ("email", "username", "user_email") if c in user_cols] or ["email"]
-    pw_cols = [c for c in ("password_hash", "password", "pw_hash", "hashed_password") if c in user_cols]
-
-    with engine.connect() as conn:
-        for id_col in id_cols:
-            for cand in candidates:
-                row = conn.execute(
-                    text(f"SELECT * FROM users WHERE LOWER({id_col}) = :em"),
-                    {"em": cand},
-                ).mappings().first()
-                if row:
-                    r_dict = dict(row)
-                    salt_val = str(r_dict.get("salt") or "")
-                    for p_col in pw_cols:
-                        stored_pw = str(r_dict.get(p_col) or "")
-                        if _verify_password_compat(password, stored_pw, salt=salt_val):
-                            disp_email = str(
-                                r_dict.get("email")
-                                or r_dict.get("username")
-                                or r_dict.get("user_email")
-                                or cand
-                            )
-                            return {"id": str(r_dict["id"]), "email": disp_email}
-    return None
-
-
-def register_user(email: str, password: str) -> Tuple[bool, str]:
-    raw_clean = str(email or "").strip().lower()
-    norm_email = normalize_login_email(email)
-    if not norm_email or len(password) < 4:
-        return False, "Enter a valid username/email and a password (at least 4 characters)."
-
-    candidates = list(dict.fromkeys([c for c in (norm_email, raw_clean) if c]))
-    user_cols = _get_users_table_columns()
-    id_cols = [c for c in ("email", "username", "user_email") if c in user_cols] or ["email"]
-
-    with engine.connect() as conn:
-        for id_col in id_cols:
-            for cand in candidates:
-                existing = conn.execute(
-                    text(f"SELECT id FROM users WHERE LOWER({id_col}) = :em"),
-                    {"em": cand},
-                ).first()
-                if existing:
-                    return False, "An account with that email/username already exists. Try signing in."
-
-    new_id = str(uuid.uuid4())
-    now_iso = get_local_now().isoformat()
-    pw_hashed = _hash_pw(password)
-
-    insert_cols = ["id"]
-    insert_vals: Dict[str, Any] = {"id": new_id}
-
-    if "email" in user_cols:
-        insert_cols.append("email")
-        insert_vals["email"] = norm_email
-    if "username" in user_cols:
-        insert_cols.append("username")
-        insert_vals["username"] = raw_clean
-    if "password_hash" in user_cols:
-        insert_cols.append("password_hash")
-        insert_vals["password_hash"] = pw_hashed
-    elif "password" in user_cols:
-        insert_cols.append("password")
-        insert_vals["password"] = pw_hashed
-    if "created_at" in user_cols:
-        insert_cols.append("created_at")
-        insert_vals["created_at"] = now_iso
-
-    cols_sql = ", ".join(insert_cols)
-    params_sql = ", ".join(f":{c}" for c in insert_cols)
-
+# Authentication & Feedback Handlers
+# -----------------------
+def sign_up_user(email: str, password: str) -> Dict[str, Any]:
+    email_clean = email.lower().strip()
+    user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email_clean))
     with engine.begin() as conn:
+        if conn.execute(text("SELECT id FROM users WHERE email = :email"), {"email": email_clean}).fetchone():
+            return {"error": "User with this email already exists."}
         conn.execute(
-            text(f"INSERT INTO users ({cols_sql}) VALUES ({params_sql})"),
-            insert_vals,
+            text("INSERT INTO users (id, email, password_hash, created_at) VALUES (:id, :email, :password_hash, :created_at)"),
+            {"id": user_id, "email": email_clean, "password_hash": _hash_pw(password.strip()), "created_at": get_local_now().isoformat()},
         )
-    return True, norm_email
+    return {"data": {"id": user_id, "email": email_clean}}
+
+
+def sign_in_user(email: str, password: str) -> Dict[str, Any]:
+    email_clean = email.lower().strip()
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT id, email, password_hash FROM users WHERE email = :email"), {"email": email_clean}).fetchone()
+        if not row or row.password_hash != _hash_pw(password.strip()):
+            return {"error": "Invalid email or password."}
+        return {"data": {"id": row.id, "email": row.email}}
+
+
+def sign_out_user() -> None:
+    clear_all_session_caches()
+    st.session_state.pop("user", None)
+    safe_rerun("app")
 
 
 def submit_user_feedback(user_id: str, email: str, category: str, rating: int, message: str) -> bool:
@@ -2027,1180 +1915,1142 @@ def submit_user_feedback(user_id: str, email: str, category: str, rating: int, m
 
 
 # -----------------------
-# Time Parsing & AI Study Planner Engine
+# Instant Fragment Callbacks
 # -----------------------
-def parse_time_str(t_str: str) -> Optional[time]:
-    s = str(t_str or "").strip().upper()
-    if not s:
+def on_checkbox_toggle(aid: str, chk_key: str, sel_key: str):
+    chk_val = st.session_state.get(chk_key, False)
+    df = st.session_state.get("df_cached")
+    if df is None or df.empty or not (df["id"] == aid).any():
+        return
+    row_dict = df.loc[df["id"] == aid].iloc[0].to_dict()
+    current_st = row_dict.get("status", "Not Started")
+    if chk_val:
+        if current_st != "Done":
+            row_dict["prev_status"] = current_st
+            st.session_state[f"prev_st_{aid}"] = current_st
+        new_status = "Done"
+    else:
+        prev_st = st.session_state.get(f"prev_st_{aid}") or row_dict.get("prev_status", "In Progress")
+        new_status = "In Progress" if (prev_st == "Done" or not prev_st) else prev_st
+    row_dict["status"] = new_status
+    st.session_state[sel_key] = new_status
+    upsert_assignments([row_dict])
+
+
+def on_status_change(aid: str, sel_key: str, chk_key: str):
+    new_status = st.session_state.get(sel_key)
+    df = st.session_state.get("df_cached")
+    if not new_status or df is None or df.empty or not (df["id"] == aid).any():
+        return
+    row_dict = df.loc[df["id"] == aid].iloc[0].to_dict()
+    if new_status != "Done":
+        row_dict["prev_status"] = new_status
+        st.session_state[f"prev_st_{aid}"] = new_status
+    row_dict["status"] = new_status
+    st.session_state[chk_key] = (new_status == "Done")
+    upsert_assignments([row_dict])
+
+
+def on_remove_schedule_block(user_id: str, block_id: str):
+    _write_schedule_file(user_id, [item for item in get_schedule_cached(user_id) if item.get("id") != block_id])
+
+
+def on_daily_slot_check(slot_key: str, task_title: str, slot_dict: Dict[str, Any], user_id: str):
+    completed_today = get_completed_slots_cached(user_id).copy()
+    completed_today[slot_key] = slot_dict
+    _write_completed_slots(user_id, completed_today)
+    st.session_state["_undo_slot_state"] = {"slot_key": slot_key, "title": task_title, "user_id": user_id, "time": get_local_now()}
+
+
+def on_undo_daily_slot(user_id: str):
+    undo_info = st.session_state.pop("_undo_slot_state", None)
+    if undo_info:
+        s_key = undo_info["slot_key"]
+        completed_today = get_completed_slots_cached(user_id).copy()
+        completed_today.pop(s_key, None)
+        _write_completed_slots(user_id, completed_today)
+        for k in list(st.session_state.keys()):
+            if s_key in k:
+                st.session_state[k] = False
+
+
+def restore_single_daily_slot(slot_key: str, user_id: str):
+    completed_today = get_completed_slots_cached(user_id).copy()
+    completed_today.pop(slot_key, None)
+    _write_completed_slots(user_id, completed_today)
+    for k in list(st.session_state.keys()):
+        if slot_key in k:
+            st.session_state[k] = False# -----------------------
+# Date & Time Helpers + AI Scheduler
+# -----------------------
+def parse_date_iso_or_empty(s: Any) -> Optional[date]:
+    if s is None or pd.isna(s):
         return None
-    for fmt in ("%I:%M %p", "%I:%M%p", "%I %p", "%H:%M"):
+    if isinstance(s, datetime):
+        return s.date()
+    if isinstance(s, date):
+        return s
+    s = str(s).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
         try:
-            return datetime.strptime(s, fmt).time()
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+def parse_time_str(t_str: str) -> Optional[time]:
+    if not t_str or pd.isna(t_str):
+        return None
+    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(str(t_str).strip().upper(), fmt).time()
         except ValueError:
             pass
     return None
 
 
-def format_time_12h(t_obj: time) -> str:
-    return datetime.combine(date.today(), t_obj).strftime("%I:%M %p").lstrip("0")
+def format_mdy(d: Optional[date]) -> str:
+    return (d or get_local_now().date()).strftime("%m/%d/%Y")
 
 
-def _mins_to_time_str(total_mins: int) -> str:
-    m_clamped = max(0, min(23 * 60 + 59, int(total_mins)))
-    h, m = divmod(m_clamped, 60)
-    return format_time_12h(time(h, m))
+def days_left(d: Optional[date]) -> Tuple[str, int]:
+    if not d:
+        return ("0d", 0)
+    delta = (d - get_local_now().date()).days
+    return (f"{delta}d left" if delta >= 0 else f"{delta}d overdue", delta)
 
 
-def _get_free_windows_for_day(day_name: str, commitments: List[Dict[str, Any]], is_today: bool, now_mins: int) -> List[Tuple[int, int]]:
-    # Default after-school / evening window: 2:30 PM (870m) to 9:30 PM (1290m); weekend: 9:30 AM (570m) to 9:30 PM (1290m)
-    win_start = 570 if day_name in ("Saturday", "Sunday") else 870
-    win_end = 1290
-    if is_today:
-        win_start = max(win_start, ((now_mins + 14) // 15) * 15)
-    if win_start >= win_end:
-        return []
-
-    busy: List[Tuple[int, int]] = []
-    for item in commitments:
-        if str(item.get("day", "")).strip() != day_name:
-            continue
-        st_t = parse_time_str(str(item.get("start", "")))
-        en_t = parse_time_str(str(item.get("end", "")))
-        if st_t and en_t:
-            s_m = st_t.hour * 60 + st_t.minute
-            e_m = en_t.hour * 60 + en_t.minute
-            if e_m > s_m:
-                busy.append((max(win_start, s_m - 5), min(win_end, e_m + 5)))
-
-    busy.sort(key=lambda x: x[0])
-    merged: List[Tuple[int, int]] = []
-    for b_s, b_e in busy:
-        if b_e <= b_s:
-            continue
-        if not merged or b_s > merged[-1][1]:
-            merged.append((b_s, b_e))
-        else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], b_e))
-
-    free_wins: List[Tuple[int, int]] = []
-    cursor = win_start
-    for b_s, b_e in merged:
-        if b_s - cursor >= 15:
-            free_wins.append((cursor, b_s))
-        cursor = max(cursor, b_e)
-    if win_end - cursor >= 15:
-        free_wins.append((cursor, win_end))
-    return free_wins
-
-
-def generate_ai_study_plan(user_id: str) -> Dict[str, Any]:
-    df = get_assignments_cached(user_id)
-    commitments = get_schedule_cached(user_id)
-    max_work = get_max_work_cached(user_id)
-    completed_slots = get_completed_slots_cached(user_id)
+def generate_ai_study_plan(df_tasks: pd.DataFrame, schedule: List[Dict[str, Any]], max_daily_mins_config: Dict[str, int] | int = 60) -> Dict[str, Any]:
+    if df_tasks.empty:
+        return {"status": "no_tasks", "plan": {}}
+    incomplete = df_tasks[df_tasks["status"] != "Done"].copy()
+    if incomplete.empty:
+        return {"status": "all_done", "plan": {}}
 
     now_local = get_local_now()
-    today_d = now_local.date()
+    today = now_local.date()
     now_mins = now_local.hour * 60 + now_local.minute
+    if now_mins % 5 != 0:
+        now_mins += (5 - (now_mins % 5))
 
-    horizon_days = 7
-    day_entries: List[Dict[str, Any]] = []
-    for offset in range(horizon_days):
-        d_obj = today_d + timedelta(days=offset)
-        d_name = DAYS_OF_WEEK[d_obj.weekday()]
-        cap_mins = max(0, int(max_work.get(d_name, 60)))
-        free_wins = _get_free_windows_for_day(d_name, commitments, is_today=(offset == 0), now_mins=now_mins)
-        day_entries.append({
-            "date": d_obj,
-            "date_iso": d_obj.isoformat(),
-            "day_name": d_name,
-            "cap_mins": cap_mins,
-            "used_mins": 0,
-            "free_wins": [list(w) for w in free_wins],
-            "slots": [],
+    task_queue = []
+    for _, row in incomplete.iterrows():
+        due_d = parse_date_iso_or_empty(row.get("due_date")) or (today + timedelta(days=7))
+        days_until = max(0, (due_d - today).days)
+        prio_val = priority_to_int(row.get("priority"))
+        eta_raw = str(row.get("eta") or "")
+        atype = str(row.get("atype") or "Homework")
+        title = str(row.get("title") or "Untitled")
+        notes = str(row.get("notes") or "")
+        is_study = is_study_task(atype, title, notes)
+        task_queue.append({
+            "id": row.get("id"),
+            "title": format_study_display_title(title) if is_study else title,
+            "course": row.get("course") or "GENERAL",
+            "priority": priority_to_label(prio_val),
+            "score": prio_val * (10.0 / max(1, days_until)),
+            "eta_mins": parse_eta_to_mins(eta_raw),
+            "days_until": days_until,
+            "repeat_daily": is_study or is_daily_recurring_task(eta_raw, title, notes),
         })
 
-    if df.empty:
-        return {"days": day_entries, "unscheduled": []}
+    task_queue.sort(key=lambda x: x["score"], reverse=True)
+    plan = {DAYS_OF_WEEK[(today.weekday() + i) % 7]: {"busy": [], "slots": []} for i in range(7)}
 
-    active_df = df[df["status"] != "Done"].copy()
-    if active_df.empty:
-        return {"days": day_entries, "unscheduled": []}
+    for i in range(7):
+        day_date = today + timedelta(days=i)
+        day_name = DAYS_OF_WEEK[day_date.weekday()]
+        max_daily_mins = max_daily_mins_config.get(day_name, 60) if isinstance(max_daily_mins_config, dict) else int(max_daily_mins_config)
+        default_start = (10 * 60) if day_date.weekday() in (5, 6) else (15 * 60 + 30)
+        day_end = (20 * 60) if day_date.weekday() in (5, 6) else (21 * 60)
+        day_start = max(default_start, now_mins) if i == 0 else default_start
 
-    tasks_queue: List[Dict[str, Any]] = []
-    for _, row in active_df.iterrows():
-        aid = str(row.get("id", ""))
-        title = str(row.get("title", "Untitled"))
-        course = str(row.get("course", "GENERAL"))
-        atype = str(row.get("atype", "Homework"))
-        notes = str(row.get("notes", ""))
-        eta_str = str(row.get("eta", ""))
-        prio_n = priority_to_int(row.get("priority"))
-        due_raw = str(row.get("due_date", "")).strip()
+        busy_intervals = []
+        for ev in [s for s in schedule if s.get("day") == day_name]:
+            st_t, end_t = parse_time_str(ev.get("start")), parse_time_str(ev.get("end"))
+            if st_t and end_t:
+                busy_intervals.append((st_t.hour * 60 + st_t.minute, end_t.hour * 60 + end_t.minute))
+                plan[day_name]["busy"].append(f"{ev.get('title')} ({ev.get('start')} - {ev.get('end')})")
+        busy_intervals.sort(key=lambda x: x[0])
 
-        try:
-            due_d = datetime.strptime(due_raw, "%Y-%m-%d").date() if due_raw else (today_d + timedelta(days=3))
-        except ValueError:
-            due_d = today_d + timedelta(days=3)
+        free_slots, curr = [], day_start
+        for b_s, b_e in busy_intervals:
+            if b_s > curr and min(b_s, day_end) > curr:
+                free_slots.append([curr, min(b_s, day_end)])
+            curr = max(curr, b_e)
+        if curr < day_end:
+            free_slots.append([curr, day_end])
 
-        base_mins = parse_eta_to_mins(eta_str)
-        status_str = str(row.get("status", "Not Started"))
-        if status_str == "Halfway Done":
-            base_mins = max(15, int(base_mins * 0.5))
-        elif status_str == "Almost Done":
-            base_mins = max(10, int(base_mins * 0.25))
-
-        study_flag = is_study_task(atype, title, notes)
-        daily_flag = is_daily_recurring_task(eta_str, title, notes)
-
-        if daily_flag:
-            for d_ent in day_entries:
-                if d_ent["date"] <= due_d:
-                    tasks_queue.append({
-                        "aid": aid,
-                        "title": format_study_display_title(title) if study_flag else title,
-                        "course": course,
-                        "mins": base_mins,
-                        "prio": prio_n,
-                        "due_d": d_ent["date"],
-                        "target_iso": d_ent["date_iso"],
-                        "is_study": study_flag,
-                    })
-        elif study_flag and (due_d - today_d).days >= 2 and base_mins >= 40:
-            days_until = min(4, max(2, (due_d - today_d).days))
-            chunk_m = max(20, (base_mins + days_until - 1) // days_until)
-            for c_idx in range(days_until):
-                tasks_queue.append({
-                    "aid": aid,
-                    "title": f"{format_study_display_title(title)} (Session {c_idx + 1}/{days_until})",
-                    "course": course,
-                    "mins": chunk_m,
-                    "prio": prio_n,
-                    "due_d": due_d,
-                    "target_iso": "",
-                    "is_study": True,
-                })
-        else:
-            tasks_queue.append({
-                "aid": aid,
-                "title": format_study_display_title(title) if study_flag else title,
-                "course": course,
-                "mins": base_mins,
-                "prio": prio_n,
-                "due_d": due_d,
-                "target_iso": "",
-                "is_study": study_flag,
-            })
-
-    tasks_queue.sort(key=lambda t: (t["due_d"], -t["prio"], -t["mins"]))
-
-    unscheduled: List[Dict[str, Any]] = []
-    for task in tasks_queue:
-        placed = False
-        for d_ent in day_entries:
-            if task["target_iso"] and d_ent["date_iso"] != task["target_iso"]:
-                continue
-            if not task["target_iso"] and d_ent["date"] > task["due_d"] and d_ent["date"] != today_d:
-                continue
-            rem_cap = d_ent["cap_mins"] - d_ent["used_mins"]
-            if rem_cap < 15:
-                continue
-            alloc_mins = min(task["mins"], rem_cap)
-            for w in d_ent["free_wins"]:
-                if w[1] - w[0] >= alloc_mins:
-                    s_str = _mins_to_time_str(w[0])
-                    e_str = _mins_to_time_str(w[0] + alloc_mins)
-                    slot_key = f"{d_ent['date_iso']}|{task['aid']}|{task['title']}"
-                    d_ent["slots"].append({
-                        "slot_key": slot_key,
-                        "aid": task["aid"],
-                        "title": task["title"],
-                        "course": task["course"],
-                        "start": s_str,
-                        "end": e_str,
-                        "mins": alloc_mins,
-                        "done": slot_key in completed_slots,
-                    })
-                    w[0] += alloc_mins + 5
-                    d_ent["used_mins"] += alloc_mins
-                    placed = True
-                    break
-            if placed:
-                break
-        if not placed:
-            unscheduled.append(task)
-
-    return {"days": day_entries, "unscheduled": unscheduled}# -----------------------
-# Modals & Interactive Dialogs
-# -----------------------
-@dialog_decorator("Add New Assignment")
-def open_add_assignment_dialog(user_id: str, prio_mode: str) -> None:
-    courses = get_courses_cached(user_id)
-    course_opts = sorted(list(set(courses + ["GENERAL"])))
-
-    with st.form("add_assignment_modal_form", clear_on_submit=True):
-        title = st.text_input("Assignment Title *", placeholder="e.g., Chapter 5 Worksheet or Study for Unit 3 Test")
-        c1, c2 = st.columns(2)
-        with c1:
-            selected_course = st.selectbox("Course", options=course_opts)
-            custom_course = st.text_input("Or Type New Course", placeholder="Optional (e.g., AP BIO)")
-        with c2:
-            atype = st.selectbox("Category / Type", options=TYPE_OPTIONS)
-            due_d = st.date_input("Due Date", value=get_local_now().date() + timedelta(days=1))
-
-        c3, c4 = st.columns(2)
-        with c3:
-            eta = st.text_input("Estimated Time (ETA)", value="30m", placeholder="e.g., 45m, 1.5h, or 20m/day")
-        with c4:
-            if prio_mode == "1 to 10 Scale (Slider)":
-                prio_val = st.slider("Priority (1 = Low, 10 = Urgent)", min_value=1, max_value=10, value=5)
-            elif prio_mode == "Both Systems":
-                prio_val = st.slider("Priority (1–3 Low, 4–6 Med, 7–10 High)", min_value=1, max_value=10, value=5)
+        day_sched_mins, remaining = 0, []
+        for t in task_queue:
+            target_max_day = max(0, t["days_until"] - 1) if t["days_until"] > 0 else 0
+            if i <= target_max_day and day_sched_mins < max_daily_mins:
+                scheduled, needed = False, t["eta_mins"]
+                for slot in free_slots:
+                    if (slot[1] - slot[0]) >= needed:
+                        st_m, end_m = slot[0], slot[0] + needed
+                        plan[day_name]["slots"].append({
+                            "slot_key": f"daily_{t['id']}_{day_date.isoformat()}",
+                            "task_id": t["id"], "day_name": day_name, "day_date_str": day_date.isoformat(),
+                            "time": f"{time(st_m // 60, st_m % 60).strftime('%I:%M %p').lstrip('0')} - {time(end_m // 60, end_m % 60).strftime('%I:%M %p').lstrip('0')}",
+                            "title": t["title"], "course": t["course"], "priority": t["priority"], "eta_mins": needed,
+                        })
+                        slot[0] = end_m
+                        day_sched_mins += needed
+                        scheduled = True
+                        break
+                if not scheduled or t["repeat_daily"]:
+                    remaining.append(t)
             else:
-                prio_lbl = st.selectbox("Priority", options=PRIORITY_OPTIONS, index=1)
-                prio_val = priority_to_int(prio_lbl)
+                remaining.append(t)
+        task_queue = remaining
 
-        notes = st.text_area("Notes / Details", placeholder="Page numbers, rubric links, topics to study...", height=75)
-
-        if st.form_submit_button("Save Assignment", use_container_width=True):
-            if not title.strip():
-                st.error("Please enter an assignment title.")
-                return
-            final_course = custom_course.strip().upper() if custom_course.strip() else selected_course
-            if final_course and final_course not in courses:
-                _write_courses_file(user_id, courses + [final_course])
-
-            new_row = {
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "title": title.strip(),
-                "course": final_course or "GENERAL",
-                "due_date": due_d.isoformat(),
-                "status": "Not Started",
-                "priority": priority_to_int(prio_val),
-                "atype": atype,
-                "eta": eta.strip() or "30m",
-                "created_at": get_local_now().isoformat(),
-                "notes": notes.strip(),
-                "prev_status": "Not Started",
-            }
-            upsert_assignments([new_row])
-            safe_rerun("app")
-
-
-@dialog_decorator("Edit Assignment")
-def open_edit_assignment_dialog(user_id: str, row_dict: Dict[str, Any], prio_mode: str) -> None:
-    courses = get_courses_cached(user_id)
-    cur_course = str(row_dict.get("course") or "GENERAL").strip().upper()
-    course_opts = sorted(list(set(courses + [cur_course, "GENERAL"])))
-
-    due_raw = str(row_dict.get("due_date") or "").strip()
-    try:
-        default_due = datetime.strptime(due_raw, "%Y-%m-%d").date() if due_raw else get_local_now().date()
-    except ValueError:
-        default_due = get_local_now().date()
-
-    cur_type = str(row_dict.get("atype") or "Homework")
-    type_idx = TYPE_OPTIONS.index(cur_type) if cur_type in TYPE_OPTIONS else 0
-
-    cur_status = str(row_dict.get("status") or "Not Started")
-    status_idx = STATUS_OPTIONS.index(cur_status) if cur_status in STATUS_OPTIONS else 0
-
-    cur_prio_n = priority_to_int(row_dict.get("priority"))
-
-    with st.form(f"edit_assign_form_{row_dict.get('id')}"):
-        title = st.text_input("Assignment Title *", value=str(row_dict.get("title") or ""))
-        c1, c2 = st.columns(2)
-        with c1:
-            selected_course = st.selectbox("Course", options=course_opts, index=course_opts.index(cur_course))
-            atype = st.selectbox("Category / Type", options=TYPE_OPTIONS, index=type_idx)
-        with c2:
-            due_d = st.date_input("Due Date", value=default_due)
-            status_val = st.selectbox("Status", options=STATUS_OPTIONS, index=status_idx)
-
-        c3, c4 = st.columns(2)
-        with c3:
-            eta = st.text_input("Estimated Time (ETA)", value=str(row_dict.get("eta") or "30m"))
-        with c4:
-            if prio_mode in ("1 to 10 Scale (Slider)", "Both Systems"):
-                prio_val = st.slider("Priority (1–10)", min_value=1, max_value=10, value=cur_prio_n)
-            else:
-                cur_lbl = priority_to_label(cur_prio_n)
-                prio_lbl = st.selectbox("Priority", options=PRIORITY_OPTIONS, index=PRIORITY_OPTIONS.index(cur_lbl))
-                prio_val = priority_to_int(prio_lbl)
-
-        notes = st.text_area("Notes", value=str(row_dict.get("notes") or ""), height=75)
-
-        b1, b2 = st.columns(2)
-        with b1:
-            save_clicked = st.form_submit_button("Save Changes", use_container_width=True)
-        with b2:
-            del_clicked = st.form_submit_button("Delete Permanently", use_container_width=True)
-
-        if save_clicked:
-            if not title.strip():
-                st.error("Title cannot be empty.")
-                return
-            updated = dict(row_dict)
-            if status_val == "Done" and cur_status != "Done":
-                updated["prev_status"] = cur_status
-            updated["title"] = title.strip()
-            updated["course"] = selected_course
-            updated["atype"] = atype
-            updated["due_date"] = due_d.isoformat()
-            updated["status"] = status_val
-            updated["eta"] = eta.strip() or "30m"
-            updated["priority"] = priority_to_int(prio_val)
-            updated["notes"] = notes.strip()
-            upsert_assignments([updated])
-            safe_rerun("app")
-
-        if del_clicked:
-            delete_assignment(str(row_dict.get("id")))
-            safe_rerun("app")
-
-
-@dialog_decorator("Theme & Appearance Studio")
-def open_theme_studio_dialog(user_id: str) -> None:
-    cur_theme = dict(get_theme_cached(user_id))
-    preset_names = list(THEME_PRESETS.keys())
-    cur_preset = cur_theme.get("preset", preset_names[0])
-    if cur_preset not in preset_names:
-        cur_preset = preset_names[0]
-
-    sel_preset = st.selectbox("Theme Preset", options=preset_names, index=preset_names.index(cur_preset))
-    p_defaults = THEME_PRESETS[sel_preset]
-
-    c1, c2 = st.columns(2)
-    with c1:
-        mode_opts = ["Dark", "Light"]
-        default_mode = p_defaults["mode"] if sel_preset != cur_preset else cur_theme.get("mode", p_defaults["mode"])
-        sel_mode = st.selectbox("Contrast Mode", options=mode_opts, index=mode_opts.index(default_mode))
-    with c2:
-        default_accent = p_defaults["accent"] if sel_preset != cur_preset else cur_theme.get("accent", p_defaults["accent"])
-        sel_accent = st.color_picker("Accent Color", value=default_accent)
-
-    bg_types = ["preset", "solid", "gradient", "photo"]
-    bg_labels = {"preset": "Preset Theme Background", "solid": "Solid Color", "gradient": "Custom Gradient", "photo": "Custom Photo / Wallpaper"}
-    cur_bg_type = cur_theme.get("bg_type", "preset")
-    sel_bg_type = st.selectbox(
-        "Background Style",
-        options=bg_types,
-        format_func=lambda x: bg_labels[x],
-        index=bg_types.index(cur_bg_type) if cur_bg_type in bg_types else 0,
-    )
-
-    solid_bg = cur_theme.get("solid_bg", p_defaults["solid_bg"])
-    grad_1 = cur_theme.get("grad_1", p_defaults["grad_1"])
-    grad_2 = cur_theme.get("grad_2", p_defaults["grad_2"])
-    grad_3 = cur_theme.get("grad_3", p_defaults["grad_3"])
-    use_grad_3 = bool(cur_theme.get("use_grad_3", False))
-    grad_angle = cur_theme.get("grad_angle", "135deg")
-    photo_source = cur_theme.get("photo_source", "")
-    overlay_opacity = int(cur_theme.get("overlay_opacity", 45))
-
-    if sel_bg_type == "solid":
-        solid_bg = st.color_picker("Solid Background Color", value=solid_bg)
-    elif sel_bg_type == "gradient":
-        gc1, gc2, gc3 = st.columns(3)
-        with gc1:
-            grad_1 = st.color_picker("Color 1", value=grad_1)
-        with gc2:
-            grad_2 = st.color_picker("Color 2", value=grad_2)
-        with gc3:
-            use_grad_3 = st.checkbox("3rd Color", value=use_grad_3)
-            if use_grad_3:
-                grad_3 = st.color_picker("Color 3", value=grad_3)
-        angles = ["135deg", "90deg", "180deg", "45deg", "radial"]
-        grad_angle = st.selectbox("Gradient Direction", options=angles, index=angles.index(grad_angle) if grad_angle in angles else 0)
-    elif sel_bg_type == "photo":
-        up_file = st.file_uploader("Upload Wallpaper Image (PNG/JPG/WEBP)", type=["png", "jpg", "jpeg", "webp"])
-        url_in = st.text_input("Or Paste Direct Image URL", value="" if photo_source.startswith("data:") else photo_source)
-        if up_file is not None:
-            photo_source = encode_uploaded_photo_to_data_uri(up_file)
-        elif url_in.strip():
-            photo_source = url_in.strip()
-        overlay_opacity = st.slider("Background Dimming Overlay (%)", min_value=0, max_value=85, value=overlay_opacity)
-
-    card_opacity = st.slider("Card Glass Opacity (%)", min_value=60, max_value=98, value=int(cur_theme.get("card_opacity", 88)))
-
-    if st.button("Apply & Save Theme", use_container_width=True):
-        new_theme = {
-            "preset": sel_preset,
-            "mode": sel_mode,
-            "accent": sel_accent,
-            "bg_type": sel_bg_type,
-            "solid_bg": solid_bg,
-            "grad_1": grad_1,
-            "grad_2": grad_2,
-            "grad_3": grad_3,
-            "use_grad_3": use_grad_3,
-            "grad_angle": grad_angle,
-            "photo_source": photo_source,
-            "overlay_opacity": overlay_opacity,
-            "card_opacity": card_opacity,
-        }
-        _write_theme_config(user_id, new_theme)
-        safe_rerun("app")
-
-
-@dialog_decorator("Courses, Priority & Settings")
-def open_settings_and_courses_dialog(user_id: str) -> None:
-    st.markdown("**1. Priority Display System**")
-    cur_prio_mode = get_prio_cached(user_id) or PRIORITY_SYSTEM_MODES[0]
-    if cur_prio_mode not in PRIORITY_SYSTEM_MODES:
-        cur_prio_mode = PRIORITY_SYSTEM_MODES[0]
-
-    new_prio_mode = st.selectbox("Priority Format", options=PRIORITY_SYSTEM_MODES, index=PRIORITY_SYSTEM_MODES.index(cur_prio_mode))
-    if st.button("Save Priority Format", use_container_width=True):
-        _write_prio_config(user_id, new_prio_mode)
-        safe_rerun("app")
-
-    st.markdown("---")
-    st.markdown("**2. My Courses**")
-    courses = get_courses_cached(user_id)
-    new_c = st.text_input("Add Course Name", placeholder="e.g., GEOMETRY, SPANISH, ENGLISH")
-    if st.button("Add Course", use_container_width=True):
-        c_clean = new_c.strip().upper()
-        if c_clean and c_clean not in courses:
-            _write_courses_file(user_id, courses + [c_clean])
-            safe_rerun("app")
-
-    if courses:
-        for c_item in list(courses):
-            cc1, cc2 = st.columns([3.5, 1])
-            with cc1:
-                st.markdown(f"`{c_item}`")
-            with cc2:
-                if st.button("Remove", key=f"del_crs_{c_item}", use_container_width=True):
-                    _write_courses_file(user_id, [x for x in courses if x != c_item])
-                    safe_rerun("app")
-
-
-@dialog_decorator("What's New & Feedback")
-def open_updates_and_feedback_dialog(user_id: str, user_email: str) -> None:
-    st.markdown(
-        f"<div class='update-card'>"
-        f"<span class='update-ver-badge'>v{CURRENT_APP_VERSION} NEW</span> <b>Live SHS Spreadsheet Sync, Per-Day Lunch Waves & Study Hall Rooms</b>"
-        f"<p class='slot-meta-text' style='margin-top:6px;'>"
-        f"• Letter days auto-sync live from your SHS Google Spreadsheet (with built-in 2026–2027 calendar fallback).<br>"
-        f"• Separate lunch waves (L1/L2/L3) and Study Hall room numbers per letter day (A, B, C, D, X).<br>"
-        f"• Unified course badge font across all periods and live 60-second NOW highlighting.</p>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    if get_seen_updates_cached(user_id) != CURRENT_APP_VERSION:
-        _write_seen_updates(user_id, CURRENT_APP_VERSION)
-
-    st.markdown("---")
-    st.markdown("**Send Feedback or Report an Issue**")
-    with st.form("feedback_modal_form", clear_on_submit=True):
-        fb_cat = st.selectbox("Topic", ["Feature Request", "Bug Report", "SHS Schedule / Calendar", "General Feedback"])
-        fb_rating = st.slider("App Rating", 1, 5, 5)
-        fb_msg = st.text_area("Message", placeholder="Tell us what you think or what we should add next...")
-        if st.form_submit_button("Submit Feedback", use_container_width=True):
-            if submit_user_feedback(user_id, user_email, fb_cat, fb_rating, fb_msg):
-                st.success("Thanks! Your feedback was saved.")
-            else:
-                st.error("Please enter a message first.")
+    return {"status": "success", "plan": plan}
 
 
 # -----------------------
-# Fragment 1: Assignment Grids (Assignments / Tests & Quizzes / Other)
+# Auth Page
 # -----------------------
-@fragment_decorator
-def render_assignment_grid_fragment(
-    user_id: str,
-    category: str,
-    prio_mode: str,
-    is_light: bool,
-    key_prefix: str = "",
-) -> None:
-    df = get_assignments_cached(user_id)
-    undo_item = st.session_state.get("_last_done_undo")
-    if isinstance(undo_item, dict) and undo_item.get("cat") == category:
-        u_col1, u_col2 = st.columns([4, 1])
-        with u_col1:
-            st.info(f"Marked **{undo_item['row'].get('title')}** as Done.")
-        with u_col2:
-            if st.button("Undo", key=f"{key_prefix}_undo_done_btn", use_container_width=True):
-                restore_single_assignment(undo_item["row"])
-                st.session_state.pop("_last_done_undo", None)
-                safe_rerun("app")
-
-    if df.empty:
-        st.info("No assignments yet! Click **+ Add Task** at the top to add your first task.")
-        return
-
-    active_df = df[df["status"] != "Done"].copy()
-    if category == "tests":
-        sub_df = active_df[active_df["atype"] == "Test & Quizzes"].copy()
-    elif category == "other":
-        sub_df = active_df[active_df["atype"] == "Other"].copy()
-    else:
-        sub_df = active_df[~active_df["atype"].isin(["Test & Quizzes", "Other"])].copy()
-
-    if sub_df.empty:
-        st.info("Nothing pending in this tab right now.")
-        return
-
-    courses_present = ["All Courses"] + sorted(list(set(sub_df["course"].fillna("GENERAL").astype(str).str.upper())))
-    f1, f2, f3 = st.columns([1.4, 1.1, 1.1])
-    with f1:
-        q_search = st.text_input("Search", placeholder="Filter by title or notes...", key=f"{key_prefix}_search")
-    with f2:
-        f_course = st.selectbox("Filter Course", options=courses_present, key=f"{key_prefix}_course_filter")
-    with f3:
-        sort_by = st.selectbox("Sort By", options=["Due Date (Soonest)", "Priority (Highest)", "Course (A–Z)"], key=f"{key_prefix}_sort")
-
-    if q_search.strip():
-        q_low = q_search.strip().lower()
-        sub_df = sub_df[
-            sub_df["title"].fillna("").str.lower().str.contains(q_low, regex=False)
-            | sub_df["notes"].fillna("").str.lower().str.contains(q_low, regex=False)
-        ]
-    if f_course != "All Courses":
-        sub_df = sub_df[sub_df["course"].fillna("GENERAL").str.upper() == f_course]
-
-    if sub_df.empty:
-        st.warning("No matching assignments for your current filter.")
-        return
-
-    sub_df["_prio_num"] = sub_df["priority"].apply(priority_to_int)
-    sub_df["_due_sort"] = sub_df["due_date"].fillna("9999-12-31").replace("", "9999-12-31")
-    if sort_by == "Priority (Highest)":
-        sub_df = sub_df.sort_values(by=["_prio_num", "_due_sort"], ascending=[False, True])
-    elif sort_by == "Course (A–Z)":
-        sub_df = sub_df.sort_values(by=["course", "_due_sort"], ascending=[True, True])
-    else:
-        sub_df = sub_df.sort_values(by=["_due_sort", "_prio_num"], ascending=[True, False])
-
-    today_d = get_local_now().date()
-    cols = st.columns(3)
-    for idx, (_, row) in enumerate(sub_df.iterrows()):
-        r_dict = row.to_dict()
-        aid = str(r_dict["id"])
-        with cols[idx % 3]:
-            with st.container(border=True):
-                course_html = get_course_badge_html(str(r_dict.get("course") or "GENERAL"), is_light=is_light)
-                prio_n = priority_to_int(r_dict.get("priority"))
-                prio_lbl = priority_to_label(prio_n)
-                prio_cls = "prio-high" if prio_lbl == "High" else ("prio-low" if prio_lbl == "Low" else "prio-medium")
-                prio_disp = format_priority_display(prio_n, prio_mode)
-
-                st.markdown(
-                    f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
-                    f"{course_html}<span class='{prio_cls}'>{prio_disp}</span></div>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(f"<div class='card-task-title'>{r_dict.get('title', 'Untitled')}</div>", unsafe_allow_html=True)
-                st.markdown(
-                    f"<div class='card-task-meta'>{r_dict.get('atype', 'Homework')} • Est. {r_dict.get('eta') or '30m'}</div>",
-                    unsafe_allow_html=True,
-                )
-
-                due_s = str(r_dict.get("due_date") or "").strip()
-                due_badge = "No due date"
-                if due_s:
-                    try:
-                        d_obj = datetime.strptime(due_s, "%Y-%m-%d").date()
-                        diff = (d_obj - today_d).days
-                        if diff < 0:
-                            due_badge = f"Overdue ({d_obj.strftime('%b %d')})"
-                        elif diff == 0:
-                            due_badge = "Due Today"
-                        elif diff == 1:
-                            due_badge = "Due Tomorrow"
-                        else:
-                            due_badge = f"Due {d_obj.strftime('%a, %b %d')} ({diff}d)"
-                    except ValueError:
-                        due_badge = due_s
-
-                st.markdown(
-                    f"<div class='card-footer-row'><span class='card-due-text'>📅 {due_badge}</span>"
-                    f"<span class='card-due-text'><b>{r_dict.get('status', 'Not Started')}</b></span></div>",
-                    unsafe_allow_html=True,
-                )
-                if str(r_dict.get("notes") or "").strip():
-                    st.markdown(f"<div class='card-note-text'>{r_dict['notes']}</div>", unsafe_allow_html=True)
-
-                b1, b2, b3 = st.columns([1.4, 1, 1])
-                with b1:
-                    cur_st = str(r_dict.get("status") or "Not Started")
-                    st_opts = [s for s in STATUS_OPTIONS if s != "Done"]
-                    new_st = st.selectbox(
-                        "Progress",
-                        options=st_opts,
-                        index=st_opts.index(cur_st) if cur_st in st_opts else 0,
-                        label_visibility="collapsed",
-                        key=f"{key_prefix}_st_{aid}",
-                    )
-                    if new_st != cur_st:
-                        upd = dict(r_dict)
-                        upd["status"] = new_st
-                        upsert_assignments([upd])
-                        safe_rerun("fragment")
-                with b2:
-                    if st.button("Done", key=f"{key_prefix}_done_{aid}", use_container_width=True):
-                        upd = dict(r_dict)
-                        upd["prev_status"] = cur_st
-                        upd["status"] = "Done"
-                        upsert_assignments([upd])
-                        st.session_state["_last_done_undo"] = {"cat": category, "row": upd}
-                        safe_rerun("app")
-                with b3:
-                    if st.button("Edit", key=f"{key_prefix}_edit_{aid}", use_container_width=True):
-                        open_edit_assignment_dialog(user_id, r_dict, prio_mode)
-
-
-# -----------------------
-# Fragment 2: Live SHS Bell Schedule, Spreadsheet Sync & Period Mapper
-# -----------------------
-try:
-    _shs_auto_fragment = fragment_decorator(run_every=60)
-except TypeError:
-    _shs_auto_fragment = fragment_decorator
-
-
-@_shs_auto_fragment
-def render_shs_bell_schedule_fragment(user_id: str, is_light: bool) -> None:
-    shs_cfg = get_shs_cached(user_id)
-    saved_lunches = dict(shs_cfg.get("lunches", {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}))
-    saved_periods = dict(shs_cfg.get("periods", {str(i): "" for i in range(1, 9)}))
-    saved_rooms = dict(shs_cfg.get("study_rooms", {"A": "", "B": "", "C": "", "D": "", "X": ""}))
-    saved_sheet_url = str(shs_cfg.get("sheet_url", "")).strip()
-    user_courses = get_courses_cached(user_id)
-
-    col_bells, col_mapper = st.columns([1.8, 1.2])
-
-    with col_bells:
-        st.markdown("<div class='section-heading'>SHS Daily Letter Day & Bell Schedule</div>", unsafe_allow_html=True)
-        st.caption("Syncs live from the SHS spreadsheet (with 2026–2027 calendar fallback) and updates active period every minute.")
-
-        now_local = get_local_now()
-        c_d1, c_d2, c_d3 = st.columns([1.15, 0.95, 1.35])
-        with c_d1:
-            view_date = st.date_input("Schedule Date", value=now_local.date(), key="shs_bell_date_input")
-
-        day_info = get_shs_day_info(view_date, custom_sheet_url=saved_sheet_url)
-        detected_letter = day_info.get("letter", "A")
-        detected_sched = day_info.get("schedule", "Daily")
-        day_note = day_info.get("note", "")
-        day_source = day_info.get("source", "Calendar")
-
-        letter_opts = ["A", "B", "C", "D", "X"]
-        default_letter = detected_letter if detected_letter in letter_opts else "A"
-        default_sched = detected_sched if detected_sched in SHS_SCHEDULE_TYPES else ("X Day" if default_letter == "X" else "Daily")
-
-        with c_d2:
-            active_letter = st.selectbox(
-                "Letter Day",
-                options=letter_opts,
-                index=letter_opts.index(default_letter),
-                key=f"shs_letter_sel_{view_date.isoformat()}",
-            )
-        with c_d3:
-            active_sched = st.selectbox(
-                "Bell Schedule",
-                options=SHS_SCHEDULE_TYPES,
-                index=SHS_SCHEDULE_TYPES.index(default_sched),
-                key=f"shs_sched_sel_{view_date.isoformat()}",
-            )
-
-        active_lunch = saved_lunches.get(active_letter, "L2")
-        src_tag = f"Source: {day_source}"
-
-        if detected_letter in ("NO SCHOOL", "WEEKEND"):
-            st.info(f"**{view_date.strftime('%A, %b %d')}**: {detected_letter} ({day_note}) • {src_tag}. Previewing **{active_letter} Day ({active_sched})** below.")
-        elif day_note:
-            st.caption(f"Calendar Note: **{day_note}** • {SHS_DROPPED_PERIODS.get(active_letter, '')} • {active_letter} Day Lunch: **{active_lunch}** • {src_tag}")
-        else:
-            st.caption(f"Rotation Info: **{SHS_DROPPED_PERIODS.get(active_letter, '')}** • {active_letter} Day Lunch: **{active_lunch}** • {src_tag}")
-
-        blocks = build_shs_bell_blocks(active_letter, active_sched, active_lunch, saved_periods, study_rooms=saved_rooms)
-        is_today = (view_date == now_local.date()) and (detected_letter not in ("NO SCHOOL", "WEEKEND"))
-        now_mins = now_local.hour * 60 + now_local.minute
-
-        for blk in blocks:
-            st_t = parse_time_str(blk["start"])
-            end_t = parse_time_str(blk["end"])
-            is_live = False
-            if is_today and st_t and end_t:
-                s_m = st_t.hour * 60 + st_t.minute
-                e_m = end_t.hour * 60 + end_t.minute
-                if s_m <= now_mins < e_m:
-                    is_live = True
-
-            row_cls = "bell-row bell-row-active" if is_live else "bell-row"
-            live_badge = "<span class='bell-live-tag'>NOW</span>" if is_live else ""
-            is_lunch_blk = (blk.get("is_lunch") == "1")
-
-            if is_lunch_blk:
-                class_html = f"<span class='slot-title-text'>{blk['class_name']}</span>"
-            else:
-                class_html = get_course_badge_html(blk["class_name"], is_light=is_light)
-
-            ann_html = " <span class='slot-meta-text'>(Announcements)</span>" if blk.get("ann") == "1" else ""
-            room_html = f" <span class='bell-period-badge' style='margin-left:6px;'>{blk['room']}</span>" if blk.get("room") else ""
-
-            st.markdown(
-                f"<div class='{row_cls}'>"
-                f"<div><span class='bell-period-badge'>{blk['label']}</span> {class_html}{room_html}{ann_html}{live_badge}</div>"
-                f"<div class='card-due-text'><b>{blk['start']} – {blk['end']}</b> <span class='slot-meta-text'>({blk['mins']})</span></div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-    with col_mapper:
-        st.markdown("<div class='section-heading'>My Periods, Lunch & Rooms</div>", unsafe_allow_html=True)
-        st.caption("Customize your lunch waves, Study Hall rooms, classes, and live letter-day spreadsheet.")
-
-        with st.form("shs_period_mapper_form"):
-            st.markdown("**Lunch Wave by Letter Day**")
-            lunch_opts = ["L1", "L2", "L3"]
-            new_lunches: Dict[str, str] = {}
-
-            l_row1 = st.columns(3)
-            for idx, (l_code, l_lbl) in enumerate([("A", "A (Per. 5)"), ("B", "B (Per. 8)"), ("C", "C (Per. 7)")]):
-                with l_row1[idx]:
-                    cur_l = saved_lunches.get(l_code, "L2")
-                    new_lunches[l_code] = st.selectbox(
-                        l_lbl,
-                        options=lunch_opts,
-                        index=lunch_opts.index(cur_l) if cur_l in lunch_opts else 1,
-                        key=f"shs_lunch_sel_{l_code}",
-                    )
-
-            l_row2 = st.columns(2)
-            for idx, (l_code, l_lbl) in enumerate([("D", "D Day (Per. 6)"), ("X", "X Day (Per. 6)")]):
-                with l_row2[idx]:
-                    cur_l = saved_lunches.get(l_code, "L2")
-                    new_lunches[l_code] = st.selectbox(
-                        l_lbl,
-                        options=lunch_opts,
-                        index=lunch_opts.index(cur_l) if cur_l in lunch_opts else 1,
-                        key=f"shs_lunch_sel_{l_code}",
-                    )
-
-            st.markdown("---")
-            st.markdown("**Study Hall Room by Letter Day**")
-            new_rooms: Dict[str, str] = {}
-            r_cols = st.columns(5)
-            for idx, l_code in enumerate(["A", "B", "C", "D", "X"]):
-                with r_cols[idx]:
-                    new_rooms[l_code] = st.text_input(
-                        f"{l_code} Day",
-                        value=str(saved_rooms.get(l_code, "")),
-                        placeholder="214",
-                        key=f"shs_room_in_{l_code}",
-                    )
-
-            st.markdown("---")
-            st.markdown("**Classes by Period**")
-            course_choices = [""] + sorted(list(set(user_courses + ["STUDY HALL", "FREE / UNASSIGNED"])))
-            new_periods: Dict[str, str] = {}
-
-            p_col1, p_col2 = st.columns(2)
-            for p_num in range(1, 9):
-                p_key = str(p_num)
-                cur_val = str(saved_periods.get(p_key, "")).strip().upper()
-                opts_for_p = list(course_choices)
-                if cur_val and cur_val not in opts_for_p:
-                    opts_for_p.insert(1, cur_val)
-                target_col = p_col1 if p_num <= 4 else p_col2
-                with target_col:
-                    new_periods[p_key] = st.selectbox(
-                        f"Period {p_num}",
-                        options=opts_for_p,
-                        index=opts_for_p.index(cur_val) if cur_val in opts_for_p else 0,
-                        key=f"shs_p_sel_{p_num}",
-                    )
-
-            st.markdown("---")
-            st.markdown("**Live Letter-Day Google Spreadsheet URL**")
-            new_sheet_url = st.text_input(
-                "Google Sheet Link (Published CSV or Share Link)",
-                value=saved_sheet_url,
-                placeholder="https://docs.google.com/spreadsheets/d/...",
-                key="shs_sheet_url_input",
-            )
-
-            if st.form_submit_button("Save My SHS Schedule", use_container_width=True):
-                fetch_live_shs_spreadsheet_map.clear()
-                _write_shs_config(
-                    user_id,
-                    {
-                        "lunches": new_lunches,
-                        "periods": new_periods,
-                        "study_rooms": {k: v.strip() for k, v in new_rooms.items()},
-                        "sheet_url": new_sheet_url.strip(),
-                    },
-                )
-                st.success("SHS schedule, lunch waves, Study Hall rooms & spreadsheet saved!")
-                safe_rerun("app")# -----------------------
-# Fragment 3: Weekly Schedule & AI Study Planner
-# -----------------------
-@fragment_decorator
-def render_schedule_and_ai_fragment(user_id: str, prio_mode: str, is_light: bool) -> None:
-    commitments = list(get_schedule_cached(user_id))
-    max_work = dict(get_max_work_cached(user_id))
-    completed_slots = dict(get_completed_slots_cached(user_id))
-
-    col_plan, col_cfg = st.columns([1.65, 1.35])
-
-    with col_plan:
-        h_c1, h_c2 = st.columns([2.6, 1])
-        with h_c1:
-            st.markdown("<div class='section-heading'>AI Smart Study & Homework Plan</div>", unsafe_allow_html=True)
-            st.caption("Auto-schedules tasks around your commitments, due dates, priorities, and daily study caps.")
-        with h_c2:
-            if st.button("Refresh Plan", key="ai_refresh_plan_btn", use_container_width=True):
-                st.session_state.pop("_ai_plan_result", None)
-                safe_rerun("fragment")
-
-        if "_ai_plan_result" not in st.session_state:
-            st.session_state["_ai_plan_result"] = generate_ai_study_plan(user_id)
-
-        plan_data = st.session_state["_ai_plan_result"]
-        today_iso = get_local_now().date().isoformat()
-        slots_changed = False
-
-        for day_blk in plan_data.get("days", []):
-            d_iso = day_blk["date_iso"]
-            d_obj = day_blk["date"]
-            d_label = f"Today • {d_obj.strftime('%A, %b %d')}" if d_iso == today_iso else d_obj.strftime("%A, %b %d")
-            used_str = format_mins_to_hrs_mins(day_blk["used_mins"])
-            cap_str = format_mins_to_hrs_mins(day_blk["cap_mins"])
-
-            slots_html_parts: List[str] = []
-            if not day_blk["slots"]:
-                slots_html_parts.append("<div class='slot-meta-text'>No study blocks scheduled for this day.</div>")
-            else:
-                for s_item in day_blk["slots"]:
-                    badge_html = get_course_badge_html(s_item["course"], is_light=is_light)
-                    done_mark = " ✅" if s_item.get("done") else ""
-                    slots_html_parts.append(
-                        f"<div style='display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-bottom:7px;'>"
-                        f"<div><span class='slot-badge'>{s_item['start']} – {s_item['end']}</span> "
-                        f"{badge_html} <span class='slot-title-text'>{s_item['title']}{done_mark}</span></div>"
-                        f"<span class='slot-meta-text'>({s_item['mins']}m)</span>"
-                        f"</div>"
-                    )
-
-            st.markdown(
-                f"<div class='ai-day-card'>"
-                f"<div class='ai-day-header'>"
-                f"<span class='ai-day-title'>{d_label}</span>"
-                f"<span class='day-time-badge'>{used_str} <span class='time-max-cap'>/ {cap_str} cap</span></span>"
-                f"</div>"
-                f"{''.join(slots_html_parts)}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-            if d_iso == today_iso and day_blk["slots"]:
-                for s_item in day_blk["slots"]:
-                    s_key = s_item["slot_key"]
-                    is_checked = s_key in completed_slots
-                    new_chk = st.checkbox(
-                        f"Completed block: {s_item['title']} ({s_item['start']} – {s_item['end']})",
-                        value=is_checked,
-                        key=f"chk_slot_{s_key}",
-                    )
-                    if new_chk != is_checked:
-                        if new_chk:
-                            completed_slots[s_key] = {"day_date_str": today_iso, "title": s_item["title"]}
-                        else:
-                            completed_slots.pop(s_key, None)
-                        slots_changed = True
-
-        if slots_changed:
-            _write_completed_slots(user_id, completed_slots)
-            st.session_state.pop("_ai_plan_result", None)
-            safe_rerun("fragment")
-
-        unsched = plan_data.get("unscheduled", [])
-        if unsched:
-            st.warning(f"**{len(unsched)} task(s)** didn't fit within your current daily study caps or free windows:")
-            for u_t in unsched:
-                st.markdown(f"- **{u_t['title']}** ({u_t['course']} • {u_t['mins']}m, due {u_t['due_d'].strftime('%b %d')})")
-
-    with col_cfg:
-        st.markdown("<div class='section-heading'>Daily Study Caps & Commitments</div>", unsafe_allow_html=True)
-        st.caption("Set your max study minutes per day and add sports, clubs, work, or lessons.")
-
-        with st.expander("Max Daily Study Time (Minutes)", expanded=False):
-            with st.form("max_work_caps_form"):
-                new_caps: Dict[str, int] = {}
-                c_w1, c_w2 = st.columns(2)
-                for idx, d_name in enumerate(DAYS_OF_WEEK):
-                    target_c = c_w1 if idx < 4 else c_w2
-                    with target_c:
-                        new_caps[d_name] = st.number_input(
-                            d_name,
-                            min_value=0,
-                            max_value=480,
-                            step=15,
-                            value=int(max_work.get(d_name, 60)),
-                            key=f"max_cap_{d_name}",
-                        )
-                if st.form_submit_button("Save Daily Caps", use_container_width=True):
-                    _write_max_work_config(user_id, new_caps)
-                    st.success("Daily study caps saved!")
-                    safe_rerun("fragment")
-
-        with st.form("add_commitment_form", clear_on_submit=True):
-            st.markdown("**Add Weekly Commitment**")
-            c_name = st.text_input("Activity Name", placeholder="e.g., Soccer Practice, Piano, Work")
-            c_day = st.selectbox("Day of Week", options=DAYS_OF_WEEK)
-            tc1, tc2 = st.columns(2)
-            with tc1:
-                c_start = st.text_input("Start Time", value="3:30 PM", placeholder="e.g., 3:30 PM")
-            with tc2:
-                c_end = st.text_input("End Time", value="5:00 PM", placeholder="e.g., 5:00 PM")
-
-            if st.form_submit_button("Add Commitment", use_container_width=True):
-                if not c_name.strip():
-                    st.error("Enter an activity name.")
-                elif not parse_time_str(c_start) or not parse_time_str(c_end):
-                    st.error("Enter valid times like 3:30 PM and 5:00 PM.")
-                else:
-                    commitments.append({
-                        "id": str(uuid.uuid4()),
-                        "name": c_name.strip(),
-                        "day": c_day,
-                        "start": format_time_12h(parse_time_str(c_start)),
-                        "end": format_time_12h(parse_time_str(c_end)),
-                    })
-                    _write_schedule_file(user_id, commitments)
-                    safe_rerun("fragment")
-
-        if commitments:
-            st.markdown("**Saved Weekly Commitments**")
-            day_order = {d: i for i, d in enumerate(DAYS_OF_WEEK)}
-            sorted_comm = sorted(commitments, key=lambda x: (day_order.get(str(x.get("day")), 99), str(x.get("start"))))
-            for item in sorted_comm:
-                cid = str(item.get("id") or f"{item.get('day')}_{item.get('name')}_{item.get('start')}")
-                sc1, sc2 = st.columns([3.5, 1])
-                with sc1:
-                    st.markdown(
-                        f"<div class='sched-item-text'><b>{item.get('day')}</b> • {item.get('name')} "
-                        f"<span class='slot-meta-text'>({item.get('start')} – {item.get('end')})</span></div>",
-                        unsafe_allow_html=True,
-                    )
-                with sc2:
-                    if st.button("Remove", key=f"del_comm_{cid}", use_container_width=True):
-                        updated_comm = [x for x in commitments if x != item]
-                        _write_schedule_file(user_id, updated_comm)
-                        safe_rerun("fragment")
-
-
-# -----------------------
-# Fragment 4: Completed & Recovery
-# -----------------------
-@fragment_decorator
-def render_completed_recovery_fragment(user_id: str, is_light: bool) -> None:
-    df = get_assignments_cached(user_id)
-    st.markdown("<div class='section-heading'>Completed Assignments & Task Recovery</div>", unsafe_allow_html=True)
-    st.caption("Completed tasks stay here through their due date so you can restore them anytime if clicked by mistake.")
-
-    if df.empty:
-        st.info("No completed tasks right now.")
-        return
-
-    done_df = df[df["status"] == "Done"].copy()
-    if done_df.empty:
-        st.info("No completed tasks right now.")
-        return
-
-    top_c1, top_c2 = st.columns([3.5, 1.2])
-    with top_c1:
-        st.markdown(f"**{len(done_df)}** completed assignment(s) available for recovery:")
-    with top_c2:
-        if st.button("Clear All Completed", key="clear_all_done_btn", use_container_width=True):
-            for _, r in done_df.iterrows():
-                delete_assignment(str(r["id"]))
-            safe_rerun("app")
-
-    for _, row in done_df.iterrows():
-        r_dict = row.to_dict()
-        aid = str(r_dict["id"])
-        badge_html = get_course_badge_html(str(r_dict.get("course") or "GENERAL"), is_light=is_light)
-        rc1, rc2, rc3 = st.columns([3.4, 0.9, 0.9])
-        with rc1:
-            st.markdown(
-                f"<div class='recovery-card'>"
-                f"<div>{badge_html} <span class='slot-title-text' style='margin-left:8px;'>{r_dict.get('title', 'Untitled')}</span> "
-                f"<span class='slot-meta-text'>• Due {r_dict.get('due_date') or 'N/A'}</span></div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        with rc2:
-            if st.button("Restore", key=f"restore_done_{aid}", use_container_width=True):
-                restore_single_assignment(r_dict)
-                safe_rerun("app")
-        with rc3:
-            if st.button("Delete", key=f"perm_del_done_{aid}", use_container_width=True):
-                delete_assignment(aid)
-                safe_rerun("app")
-
-
-# -----------------------
-# Authentication Screen & Main Application Entrypoint
-# -----------------------
-def render_auth_screen() -> None:
+def render_terminal_auth_page():
     st.markdown(build_theme_css(DEFAULT_THEME_CONFIG), unsafe_allow_html=True)
-    _, mid_col, _ = st.columns([1, 1.35, 1])
-    with mid_col:
+    auth_container = st.empty()
+    with auth_container.container():
+        _, c_center, _ = st.columns([1, 1.6, 1])
+        with c_center:
+            st.markdown(
+                """
+                <div style='background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 32px 28px; text-align: center; margin-bottom: 20px; backdrop-filter: blur(12px); box-shadow: 0 10px 30px rgba(0,0,0,0.5);'>
+                    <div style='display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom: 4px;'>
+                        <svg width='34' height='34' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                            <rect x='2' y='3' width='12' height='12' rx='2' fill='white' opacity='0.5'/>
+                            <rect x='6' y='7' width='12' height='12' rx='2' fill='white' opacity='0.8'/>
+                            <rect x='10' y='11' width='12' height='12' rx='2' fill='white'/>
+                        </svg>
+                        <span style='font-size: 1.9rem; font-weight: 800; color: #ffffff !important; letter-spacing: -0.03em;'>Assignment Tracker</span>
+                    </div>
+                    <div style='font-size: 0.85rem; color: #94a3b8 !important;'>Simsbury High School Portal</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            mode = st.radio("Action Mode", ["Sign In", "Sign Up"], horizontal=True, label_visibility="collapsed", key="terminal_mode")
+            with st.form("auth_credentials_form", clear_on_submit=False):
+                raw_user_input = st.text_input("Username or Email", placeholder="e.g. 30guptaa or username@simsburyschools.net", key="terminal_user")
+                password = st.text_input("Password", type="password", key="terminal_pw")
+                if st.form_submit_button("Sign In" if mode == "Sign In" else "Register Account", use_container_width=True):
+                    email_val = raw_user_input.strip()
+                    if email_val and "@" not in email_val:
+                        email_val = f"{email_val}{DEFAULT_DOMAIN}"
+                    password_val = password.strip()
+                    if not email_val or not password_val:
+                        st.error("Please enter both credentials.")
+                    elif mode == "Sign Up":
+                        res = sign_up_user(email_val, password_val)
+                        if "error" in res:
+                            st.error(f"Sign up failed: {res['error']}")
+                        else:
+                            st.success(f"Registered {email_val}. You can now sign in.")
+                    else:
+                        res = sign_in_user(email_val, password_val)
+                        if "error" in res:
+                            st.error(f"Sign in failed: {res['error']}")
+                        else:
+                            clear_all_session_caches()
+                            st.session_state.user = res["data"]
+                            hydrate_user_session(res["data"]["id"], force=True)
+                            auth_container.empty()
+                            safe_rerun("app")
+
+
+# -----------------------
+# Modal Dialogs
+# -----------------------
+def _valid_hex(val: Any, fallback: str) -> str:
+    s = str(val or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", s):
+        return s
+    return fallback
+
+
+@dialog_decorator("🎨 Theme & Appearance Studio")
+def show_theme_dialog(user_id: str):
+    cur = {**DEFAULT_THEME_CONFIG, **get_theme_cached(user_id)}
+    preset_names = list(THEME_PRESETS.keys())
+    cur_preset = cur.get("preset") if cur.get("preset") in preset_names else preset_names[0]
+
+    st.caption("Switch between Dark & eye-friendly Light modes, choose presets, build custom gradients, or upload a photo background.")
+
+    c1, c2 = st.columns([1.6, 1.0])
+    with c1:
+        selected_preset = st.selectbox("Theme Preset", options=preset_names, index=preset_names.index(cur_preset), key="theme_preset_sel")
+    preset_defaults = THEME_PRESETS[selected_preset]
+    preset_changed = (selected_preset != cur_preset)
+
+    default_mode = preset_defaults["mode"] if preset_changed else cur.get("mode", "Dark")
+    with c2:
+        selected_mode = st.radio("Base Mode", ["Dark", "Light"], index=0 if default_mode == "Dark" else 1, horizontal=True, key="theme_base_mode_radio")
+
+    default_accent = _valid_hex(preset_defaults["accent"] if preset_changed else cur.get("accent", "#6366f1"), "#6366f1")
+    c_acc1, c_acc2 = st.columns([1, 2.2])
+    with c_acc1:
+        selected_accent = st.color_picker("Accent Color", value=default_accent, key="theme_accent_picker")
+    with c_acc2:
+        btn_txt_c = "#0f172a" if _relative_luminance(selected_accent) > 0.45 else "#ffffff"
         st.markdown(
-            "<div class='header-brand-box' style='width:100%; text-align:center; margin-top:24px;'>"
-            "<div class='app-title'>📑 Assignment Tracker</div>"
-            "<div class='app-subtitle'>SHS Live Bell Schedule • AI Study Planner • Cloud Sync</div>"
-            "</div>",
+            f"<div style='margin-top:26px; padding:7px 12px; border-radius:8px; background:{selected_accent}; color:{btn_txt_c} !important; font-weight:800; font-size:0.8rem; text-align:center;'>Accent Preview ({selected_accent})</div>",
             unsafe_allow_html=True,
         )
 
-        tab_login, tab_signup = st.tabs(["Sign In", "Create Account"])
+    st.markdown("---")
+    bg_type_map = {"preset": "Preset Theme", "solid": "Custom Solid Color", "gradient": "Custom Gradient", "photo": "Custom Photo Background"}
+    rev_bg_map = {v: k for k, v in bg_type_map.items()}
+    bg_opts = list(bg_type_map.values())
+    cur_bg_label = bg_type_map.get(cur.get("bg_type", "preset"), "Preset Theme")
 
-        with tab_login:
-            with st.form("login_form"):
-                l_email = st.text_input("School Username or Email", placeholder="e.g., jsmith or jsmith@simsburyschools.net")
-                l_pw = st.text_input("Password", type="password")
-                if st.form_submit_button("Sign In", use_container_width=True):
-                    try:
-                        user_obj = authenticate_user(l_email, l_pw)
-                    except Exception as e:
-                        st.error(f"Database connection error: {e}")
-                        user_obj = None
-                    if user_obj:
-                        clear_all_session_caches()
-                        st.session_state["auth_user"] = user_obj
-                        safe_rerun("app")
-                    else:
-                        st.error("Invalid email/username or password.")
+    selected_bg_type = rev_bg_map[st.radio("Background Style", bg_opts, index=bg_opts.index(cur_bg_label), horizontal=True, key="theme_bg_style_radio")]
 
-        with tab_signup:
-            with st.form("signup_form"):
-                s_email = st.text_input("School Username or Email", placeholder="e.g., jsmith or jsmith@simsburyschools.net")
-                s_pw = st.text_input("Choose Password (min 4 chars)", type="password")
-                s_pw2 = st.text_input("Confirm Password", type="password")
-                if st.form_submit_button("Create Account", use_container_width=True):
-                    if s_pw != s_pw2:
-                        st.error("Passwords do not match.")
-                    else:
-                        try:
-                            ok, msg = register_user(s_email, s_pw)
-                        except Exception as e:
-                            ok, msg = False, f"Database connection error: {e}"
-                        if ok:
-                            user_obj = authenticate_user(msg, s_pw)
-                            if user_obj:
-                                clear_all_session_caches()
-                                st.session_state["auth_user"] = user_obj
-                                safe_rerun("app")
-                        else:
-                            st.error(msg)
+    solid_bg_val = _valid_hex(preset_defaults["solid_bg"] if preset_changed else cur.get("solid_bg", "#070a12"), "#070a12")
+    grad_1_val = _valid_hex(preset_defaults["grad_1"] if preset_changed else cur.get("grad_1", "#0f172a"), "#0f172a")
+    grad_2_val = _valid_hex(preset_defaults["grad_2"] if preset_changed else cur.get("grad_2", "#312e81"), "#312e81")
+    grad_3_val = _valid_hex(preset_defaults["grad_3"] if preset_changed else cur.get("grad_3", "#070a12"), "#070a12")
+    use_grad_3_val = bool(cur.get("use_grad_3", False))
+    grad_angle_val = cur.get("grad_angle", "135deg")
+    photo_source_val = cur.get("photo_source", "")
+    overlay_opacity_val = int(cur.get("overlay_opacity", 45))
+    card_opacity_val = int(cur.get("card_opacity", 88))
+
+    if selected_bg_type == "solid":
+        solid_bg_val = st.color_picker("Custom Background Color", value=solid_bg_val, key="theme_solid_picker")
+    elif selected_bg_type == "gradient":
+        gc1, gc2, gc3 = st.columns(3)
+        with gc1:
+            grad_1_val = st.color_picker("Gradient Color 1", value=grad_1_val, key="theme_grad1_picker")
+        with gc2:
+            grad_2_val = st.color_picker("Gradient Color 2", value=grad_2_val, key="theme_grad2_picker")
+        with gc3:
+            use_grad_3_val = st.checkbox("3rd Color Stop", value=use_grad_3_val, key="theme_use_grad3")
+            if use_grad_3_val:
+                grad_3_val = st.color_picker("Gradient Color 3", value=grad_3_val, key="theme_grad3_picker")
+        angle_opts = ["135deg", "90deg", "180deg", "45deg", "radial"]
+        grad_angle_val = st.selectbox("Gradient Direction", options=angle_opts, index=angle_opts.index(grad_angle_val) if grad_angle_val in angle_opts else 0, key="theme_grad_angle_sel")
+        stops = f"{grad_1_val}, {grad_2_val}, {grad_3_val}" if use_grad_3_val else f"{grad_1_val}, {grad_2_val}"
+        preview_css = f"radial-gradient(circle, {stops})" if grad_angle_val == "radial" else f"linear-gradient({grad_angle_val}, {stops})"
+        st.markdown(f"<div style='height:40px; border-radius:10px; background:{preview_css}; border:1.5px solid var(--card-border); margin-top:6px;'></div>", unsafe_allow_html=True)
+    elif selected_bg_type == "photo":
+        uploaded_photo = st.file_uploader("Upload Custom Photo (JPG, PNG, WEBP)", type=["png", "jpg", "jpeg", "webp"], key="theme_photo_uploader")
+        existing_url = "" if str(photo_source_val).startswith("data:") else str(photo_source_val)
+        pasted_url = st.text_input("Or Paste Direct Image URL", value=existing_url, placeholder="https://images.unsplash.com/...", key="theme_photo_url_input")
+        if uploaded_photo is not None:
+            photo_source_val = encode_uploaded_photo_to_data_uri(uploaded_photo)
+            st.success("Photo ready! Click 'Apply & Save Theme' below.")
+        elif pasted_url.strip():
+            photo_source_val = pasted_url.strip()
+        overlay_opacity_val = st.slider("Background Tint / Dim Overlay (%) — keeps text readable", min_value=0, max_value=85, value=overlay_opacity_val, key="theme_overlay_slider")
+
+    card_opacity_val = st.slider("Card Surface Opacity (%)", min_value=55, max_value=98, value=card_opacity_val, key="theme_card_opacity_slider")
+
+    b1, b2 = st.columns([2, 1])
+    with b1:
+        if st.button("Apply & Save Theme", key="save_theme_btn", use_container_width=True):
+            _write_theme_config(user_id, {
+                "preset": selected_preset, "mode": selected_mode, "accent": selected_accent,
+                "bg_type": selected_bg_type, "solid_bg": solid_bg_val,
+                "grad_1": grad_1_val, "grad_2": grad_2_val, "grad_3": grad_3_val,
+                "use_grad_3": use_grad_3_val, "grad_angle": grad_angle_val,
+                "photo_source": photo_source_val, "overlay_opacity": overlay_opacity_val,
+                "card_opacity": card_opacity_val,
+            })
+            safe_rerun("app")
+    with b2:
+        if st.button("Reset Default", key="reset_theme_btn", use_container_width=True):
+            _write_theme_config(user_id, dict(DEFAULT_THEME_CONFIG))
+            safe_rerun("app")
 
 
-def main() -> None:
-    auth_user = st.session_state.get("auth_user")
-    if not isinstance(auth_user, dict) or not auth_user.get("id"):
-        render_auth_screen()
+@dialog_decorator(f"Welcome to Assignment Tracker v{CURRENT_APP_VERSION}")
+def show_updates_dialog(user_id: str, is_first_time: bool = False):
+    st.caption("What's new, recent changelog history, and quick tips to get the most out of your tracker.")
+
+    tab_latest, tab_prev, tab_tips = st.tabs(["✨ Latest Updates", "📜 Previous Updates", "💡 Things to Know"])
+
+    with tab_latest:
+        st.markdown(
+            """
+            <div class='update-card'>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.4 NEW</span> <b>Live SHS Bell Schedule & Spreadsheet Sync</b></div>
+                <div style='font-size:0.83rem; line-height:1.45;'>
+                    Auto-detects A/B/C/D/X days, Connect Wednesdays, delays, and early dismissals with live class countdowns, per-day lunch waves (L1/L2/L3), Study Hall rooms, and optional Google Sheet calendar sync.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>NEW</span> <b>Direct Student Feedback Portal</b></div>
+                <div style='font-size:0.83rem; line-height:1.45;'>
+                    Click the <b>Feedback</b> button in the top bar anytime to report bugs, suggest features, or rate your experience.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.2</span> <b>Theme Studio & Eye-Friendly Light Mode</b></div>
+                <div style='font-size:0.83rem; line-height:1.45;'>
+                    Customize Dark or low-glare Light modes, 10 color presets, custom solid colors, multi-stop gradients, and custom photo backgrounds from the <b>Theme</b> button.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with tab_prev:
+        st.markdown(
+            """
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v3.0</span> <b>Zero-Latency @st.fragment Engine</b></div>
+                <div style='font-size:0.81rem; line-height:1.4;'>
+                    Instantaneous task checkoffs, status changes, and schedule edits without full-page reloads.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v2.5</span> <b>Smart AI Time-Slot Planner & Daily Limits</b></div>
+                <div style='font-size:0.81rem; line-height:1.4;'>
+                    Automatic daily time-slot scheduling around recurring commitments, per-day study caps, and 15-second Undo toasts.
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v2.0</span> <b>Completed & Recovery Center</b></div>
+                <div style='font-size:0.81rem; line-height:1.4;'>
+                    Restore accidentally checked-off assignments or daily study slots, with automatic cleanup of past-due finished work.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with tab_tips:
+        st.markdown(
+            """
+            <div class='tip-card'>
+                <b>1. Personalize Your SHS Bell Schedule:</b><br/>
+                Open the <b>SHS Bell Schedule</b> tab to assign your Period 1–8 classes, set your lunch wave (L1/L2/L3) for each rotation letter, and enter Study Hall room numbers.
+            </div>
+            <div class='tip-card'>
+                <b>2. Auto-Repeating Study & Daily Tasks:</b><br/>
+                Any task set to <i>Test & Quizzes</i>, containing words like <i>"study"</i>, <i>"review"</i>, or <i>"prep"</i>, or using <b>/day</b> in its duration (e.g. <code>30 mins/day</code>) automatically schedules a session every day leading up to its due date.
+            </div>
+            <div class='tip-card'>
+                <b>3. Easy Recovery & Auto-Cleanup:</b><br/>
+                Checked-off items stay in <b>Completed & Recovery</b> until their due date passes so you can restore anything anytime.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if st.button("Got it, Let's Go!" if is_first_time else "Close", key="dismiss_updates_modal_btn", use_container_width=True):
+        _write_seen_updates(user_id, CURRENT_APP_VERSION)
+        safe_rerun("app")
+
+
+@dialog_decorator("💬 Send Feedback")
+def show_feedback_dialog(user_id: str, email: str):
+    st.caption("Spot a bug, have an idea for a new feature, or want to share how the tracker is working for you?")
+    with st.form("student_feedback_form"):
+        category = st.selectbox(
+            "Feedback Category",
+            ["Feature Request", "Bug Report", "SHS Bell Schedule Issue", "General Feedback"],
+            key="fb_category_sel",
+        )
+        rating = st.slider("Overall Rating (1 = Needs Work, 5 = Love It)", min_value=1, max_value=5, value=5, key="fb_rating_slider")
+        message = st.text_area("Your Message", placeholder="Tell us what you think or describe any issue...", height=120, key="fb_message_txt")
+        if st.form_submit_button("Submit Feedback", use_container_width=True):
+            if not message.strip():
+                st.error("Please enter a short message before submitting.")
+            else:
+                if submit_user_feedback(user_id, email, category, rating, message):
+                    st.success("Thank you! Your feedback has been saved.")
+                else:
+                    st.error("Unable to submit feedback right now.")@dialog_decorator("Welcome! Setup Your Classes")
+def show_welcome_courses_dialog(user_id: str):
+    st.markdown("### Setup Your Courses")
+    courses_input = st.text_area("Enter your subjects (comma separated):", value="MATH, SCIENCE, ENGLISH, HISTORY, OTHER")
+    if st.button("Save Schedule", key="save_initial_courses_btn", use_container_width=True):
+        parsed = [c.strip().upper() for c in courses_input.replace("\n", ",").split(",") if c.strip()]
+        if parsed:
+            _write_courses_file(user_id, parsed)
+            safe_rerun("app")
+
+
+@dialog_decorator("Choose Your Priority System")
+def show_prio_config_dialog(user_id: str):
+    st.markdown("### How would you like to view & set task priorities?")
+    current_mode = get_prio_cached(user_id) or "Low / Medium / High"
+    prio_choice = st.radio("Select System Preference:", PRIORITY_SYSTEM_MODES, index=PRIORITY_SYSTEM_MODES.index(current_mode) if current_mode in PRIORITY_SYSTEM_MODES else 0, key="prio_modal_radio")
+    if st.button("Save Preference", key="save_prio_choice_btn", use_container_width=True):
+        _write_prio_config(user_id, prio_choice)
+        safe_rerun("app")
+
+
+@dialog_decorator("Create New Assignment")
+def show_add_assignment_dialog(user_id: str, prio_mode: str):
+    courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    if "OTHER" not in courses:
+        courses = courses + ["OTHER"]
+
+    with st.form("add_assignment_form"):
+        title = st.text_input("Assignment Title", key="add_title")
+        course_choice = st.selectbox("Course", options=[""] + courses, index=0, key="add_course_choice")
+        course_free = st.text_input("Or custom course name", value="", key="add_course_free")
+        status = st.selectbox("Status", STATUS_OPTIONS, index=0, key="add_status")
+        due = st.date_input("Due Date", value=get_local_now().date(), key="add_due")
+
+        if prio_mode == "1 to 10 Scale (Slider)":
+            prio_val_to_save = st.slider("Priority Rating (1 - 10)", 1, 10, 5, key="add_prio_slider")
+        elif prio_mode == "Both Systems":
+            c1, c2 = st.columns(2)
+            with c1:
+                p_lbl = st.selectbox("Priority Category", PRIORITY_OPTIONS, index=1, key="add_prio_select")
+            with c2:
+                prio_val_to_save = st.slider("Priority Rating (1 - 10)", 1, 10, priority_to_int(p_lbl), key="add_prio_slider_both")
+        else:
+            prio_val_to_save = priority_to_int(st.selectbox("Priority", PRIORITY_OPTIONS, index=1, key="add_prio_select"))
+
+        atype = st.selectbox("Type", TYPE_OPTIONS, index=0, key="add_atype")
+        eta = st.text_input("Estimated Duration (e.g. 30 mins/day)", key="add_eta")
+        notes = st.text_area("Notes", value="", key="add_notes")
+
+        if st.form_submit_button("Add Assignment"):
+            course_val = (course_free.strip() or course_choice or "GENERAL").upper()
+            upsert_assignments([{
+                "id": str(uuid.uuid4()), "user_id": user_id,
+                "title": title.strip() or "Untitled Assignment", "course": course_val,
+                "due_date": due.isoformat() if isinstance(due, date) else "",
+                "status": status, "priority": prio_val_to_save, "atype": atype,
+                "eta": eta.strip(), "created_at": get_local_now().isoformat(),
+                "notes": notes.strip(), "prev_status": status if status != "Done" else "Not Started",
+            }])
+            if course_free.strip():
+                c_list = list(get_courses_cached(user_id))
+                if course_free.strip().upper() not in c_list:
+                    c_list.append(course_free.strip().upper())
+                    _write_courses_file(user_id, c_list)
+            safe_rerun("app")
+
+
+@dialog_decorator("Edit Assignment Details")
+def show_edit_assignment_dialog(user_id: str, aid: str, prio_mode: str):
+    df_current = get_assignments_cached(user_id)
+    records = df_current[df_current["id"] == aid].to_dict(orient="records") if not df_current.empty else []
+    rec = records[0] if records else None
+    if not rec:
+        st.warning("Assignment no longer exists.")
         return
 
-    user_id = str(auth_user["id"])
-    user_email = str(auth_user.get("email", ""))
+    courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    if "OTHER" not in courses:
+        courses = courses + ["OTHER"]
 
-    hydrate_user_session(user_id)
+    with st.form("edit_assignment_form"):
+        title = st.text_input("Assignment Title", value=rec.get("title", ""), key=f"edit_title_{aid}")
+        course_choice = st.selectbox("Course", options=[""] + courses, index=(0 if rec.get("course", "") not in courses else courses.index(rec.get("course", "")) + 1), key=f"edit_course_choice_{aid}")
+        course_free = st.text_input("Or custom course name", value=rec.get("course", ""), key=f"edit_course_free_{aid}")
+        status = st.selectbox("Status", STATUS_OPTIONS, index=(STATUS_OPTIONS.index(rec.get("status")) if rec.get("status") in STATUS_OPTIONS else 0), key=f"edit_status_{aid}")
+        due = st.date_input("Due Date", value=parse_date_iso_or_empty(rec.get("due_date")) or get_local_now().date(), key=f"edit_due_{aid}")
 
-    theme_cfg = get_theme_cached(user_id)
-    is_light_theme = (theme_cfg.get("mode", "Dark") == "Light")
-    st.markdown(build_theme_css(theme_cfg), unsafe_allow_html=True)
+        curr_num = priority_to_int(rec.get("priority"))
+        curr_lbl = priority_to_label(curr_num)
+        if prio_mode == "1 to 10 Scale (Slider)":
+            prio_val_to_save = st.slider("Priority Rating (1 - 10)", 1, 10, curr_num, key=f"edit_prio_slider_{aid}")
+        elif prio_mode == "Both Systems":
+            c1, c2 = st.columns(2)
+            with c1:
+                st.selectbox("Priority Category", PRIORITY_OPTIONS, index=PRIORITY_OPTIONS.index(curr_lbl), key=f"edit_prio_select_{aid}")
+            with c2:
+                prio_val_to_save = st.slider("Priority Rating (1 - 10)", 1, 10, curr_num, key=f"edit_prio_slider_both_{aid}")
+        else:
+            prio_val_to_save = priority_to_int(st.selectbox("Priority", PRIORITY_OPTIONS, index=PRIORITY_OPTIONS.index(curr_lbl), key=f"edit_prio_select_{aid}"))
 
-    user_prio_mode = get_prio_cached(user_id) or PRIORITY_SYSTEM_MODES[0]
-    if user_prio_mode not in PRIORITY_SYSTEM_MODES:
-        user_prio_mode = PRIORITY_SYSTEM_MODES[0]
+        atype = st.selectbox("Type", TYPE_OPTIONS, index=(TYPE_OPTIONS.index(rec.get("atype")) if rec.get("atype") in TYPE_OPTIONS else 0), key=f"edit_atype_{aid}")
+        eta = st.text_input("Estimated Duration", value=rec.get("eta", ""), key=f"edit_eta_{aid}")
+        notes = st.text_area("Notes", value=rec.get("notes", ""), key=f"edit_notes_{aid}")
 
-    # Top Header & Action Buttons
-    hdr_left, hdr_right = st.columns([2.2, 2.8])
-    with hdr_left:
+        c_save, c_del = st.columns(2)
+        with c_save:
+            updated_click = st.form_submit_button("Save Changes")
+        with c_del:
+            delete_click = st.form_submit_button("Delete Assignment")
+
+        if updated_click:
+            upsert_assignments([{
+                "id": aid, "user_id": user_id, "title": title.strip(),
+                "course": (course_free.strip() or course_choice or "GENERAL").upper(),
+                "due_date": due.isoformat() if isinstance(due, date) else "",
+                "status": status, "priority": prio_val_to_save, "atype": atype,
+                "eta": eta.strip(), "notes": notes.strip(),
+                "created_at": rec.get("created_at") or get_local_now().isoformat(),
+                "prev_status": status if status != "Done" else rec.get("prev_status", "Not Started"),
+            }])
+            safe_rerun("app")
+        if delete_click:
+            delete_assignment(aid)
+            safe_rerun("app")
+
+
+@dialog_decorator("Manage Courses")
+def show_manage_courses_dialog(user_id: str):
+    courses = list(get_courses_cached(user_id))
+    to_remove = []
+    for i, c in enumerate(courses):
+        col_a, col_b = st.columns([6, 2])
+        with col_a:
+            st.write(f"• **{c}**")
+        with col_b:
+            if st.button("Remove", key=f"remove_course_{i}"):
+                to_remove.append(c)
+    if to_remove:
+        _write_courses_file(user_id, [c for c in courses if c not in to_remove])
+        safe_rerun("app")
+    st.markdown("---")
+    new_course = st.text_input("Add a new course", key="new_course_field")
+    if st.button("Add Course", key="add_course_button"):
+        v = new_course.strip().upper()
+        if v and v not in courses:
+            courses.append(v)
+            _write_courses_file(user_id, courses)
+            safe_rerun("app")
+
+
+# -----------------------
+# Isolated @st.fragment Workspaces
+# -----------------------
+@fragment_decorator
+def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mode: str, is_light: bool, key_prefix: str):
+    df_all = get_assignments_cached(user_id)
+    if view_filter == "regular":
+        df_grid = df_all[(df_all["status"] != "Done") & (df_all["atype"] != "Test & Quizzes") & (df_all["atype"] != "Other") & (df_all["course"] != "OTHER")]
+    elif view_filter == "tests":
+        df_grid = df_all[(df_all["status"] != "Done") & (df_all["atype"] == "Test & Quizzes")]
+    else:
+        df_grid = df_all[(df_all["status"] != "Done") & ((df_all["atype"] == "Other") | (df_all["course"] == "OTHER"))]
+
+    if df_grid.empty:
+        st.markdown("<div style='padding:45px 0; text-align:center; font-size:0.9rem;' class='card-note-text'>No active assignments in this view.</div>", unsafe_allow_html=True)
+        return
+
+    df_sorted = df_grid.copy()
+    df_sorted["due_parsed"] = df_sorted["due_date"].apply(parse_date_iso_or_empty)
+    df_sorted = df_sorted.sort_values(by=["due_parsed", "priority"], ascending=[True, False]).drop(columns=["due_parsed"])
+
+    for row_df in [df_sorted.iloc[i:i + 3] for i in range(0, len(df_sorted), 3)]:
+        cols = st.columns(3)
+        for idx, (_, row) in enumerate(row_df.iterrows()):
+            with cols[idx]:
+                with st.container(border=True):
+                    aid = row.get("id")
+                    title = row.get("title") or "Untitled"
+                    course = (row.get("course") or "MATH").upper()
+                    atype = row.get("atype") or "Homework"
+                    due_d = parse_date_iso_or_empty(row.get("due_date"))
+                    due_text = format_mdy(due_d)
+                    days_text, _ = days_left(due_d)
+
+                    chk_key = f"{key_prefix}chk_done_{aid}"
+                    sel_key = f"{key_prefix}status_sel_{aid}"
+                    status = st.session_state.get(sel_key) or row.get("status") or "Not Started"
+                    prio_num = priority_to_int(row.get("priority"))
+                    prio_label = priority_to_label(prio_num)
+
+                    c_top_a, c_top_b, c_top_c = st.columns([0.55, 3.45, 1.2])
+                    with c_top_a:
+                        st.checkbox("Done", value=(status == "Done"), key=chk_key, label_visibility="collapsed", on_change=on_checkbox_toggle, args=(aid, chk_key, sel_key))
+                    with c_top_b:
+                        st.markdown(get_course_badge_html(course, is_light=is_light), unsafe_allow_html=True)
+                    with c_top_c:
+                        if st.button("Edit", key=f"{key_prefix}edit_btn_{aid}", use_container_width=True):
+                            st.session_state["_pending_edit_aid"] = aid
+                            safe_rerun("app")
+
+                    st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0, key=sel_key, label_visibility="collapsed", on_change=on_status_change, args=(aid, sel_key, chk_key))
+                    st.markdown(f"<div class='card-task-title'>{title}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='card-task-meta'>{atype}</div>", unsafe_allow_html=True)
+
+                    eta = str(row.get("eta") or "").strip()
+                    notes = str(row.get("notes") or "").strip()
+                    eta_snippet = f" &bull; Est: {eta}" if eta else ""
+                    st.markdown(
+                        f"<div class='card-footer-row'>"
+                        f"<div class='card-due-text'>Due {due_text} ({days_text}){eta_snippet}</div>"
+                        f"<div class='prio-{prio_label.lower()}'>Priority: {format_priority_display(prio_num, user_prio_mode)}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if notes:
+                        note_preview = notes if len(notes) <= 90 else notes[:87] + "..."
+                        st.markdown(f"<div class='card-note-text'>Note: {note_preview}</div>", unsafe_allow_html=True)
+
+
+@fragment_decorator
+def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
+    shs_cfg = get_shs_cached(user_id)
+    now_local = get_local_now()
+    today_date = now_local.date()
+
+    st.markdown("<div class='section-heading'>🔔 Simsbury High School Bell Schedule</div>", unsafe_allow_html=True)
+    st.caption("Live A/B/C/D/X rotation, Connect Wednesdays, delays, early dismissals, lunch waves, and class countdowns.")
+
+    ctrl1, ctrl2, ctrl3 = st.columns([1.2, 1.1, 1.3])
+    with ctrl1:
+        selected_date = st.date_input("Select Date", value=today_date, key="shs_bell_date_input")
+    detected_info = get_shs_day_info(selected_date, shs_cfg.get("sheet_url", ""))
+
+    with ctrl2:
+        letter_opts = ["Auto", "A", "B", "C", "D", "X"]
+        override_letter = st.selectbox("Rotation Day", options=letter_opts, index=0, key="shs_letter_override")
+    with ctrl3:
+        sched_opts = ["Auto"] + SHS_SCHEDULE_TYPES
+        override_sched = st.selectbox("Bell Schedule", options=sched_opts, index=0, key="shs_sched_override")
+
+    active_letter = detected_info.get("letter", "A") if override_letter == "Auto" else override_letter
+    active_sched = detected_info.get("schedule", "Daily") if override_sched == "Auto" else override_sched
+    if override_letter == "X" and override_sched == "Auto":
+        active_sched = "X Day"
+
+    with st.expander("⚙️ Customize My Periods, Lunch Waves & Study Hall Rooms", expanded=False):
+        user_courses = [c for c in get_courses_cached(user_id) if c != "OTHER"]
+        course_choices = ["", "Study Hall", "Free / Unassigned"] + user_courses
+
+        st.markdown("**1. Assign Your Classes (Periods 1 – 8)**")
+        p_cols_top = st.columns(4)
+        p_cols_bot = st.columns(4)
+        new_periods = dict(shs_cfg.get("periods", {}))
+        for p_idx in range(1, 9):
+            target_col = p_cols_top[p_idx - 1] if p_idx <= 4 else p_cols_bot[p_idx - 5]
+            cur_val = str(new_periods.get(str(p_idx), "")).strip()
+            opts_for_p = list(course_choices)
+            if cur_val and cur_val not in opts_for_p:
+                opts_for_p.append(cur_val)
+            with target_col:
+                new_periods[str(p_idx)] = st.selectbox(
+                    f"Period {p_idx}",
+                    options=opts_for_p,
+                    index=opts_for_p.index(cur_val) if cur_val in opts_for_p else 0,
+                    key=f"shs_p_sel_{p_idx}",
+                    format_func=lambda x: x if x else "— Unassigned —",
+                )
+
+        st.markdown("**2. Lunch Wave by Letter Day (L1, L2, or L3)**")
+        l_cols = st.columns(5)
+        new_lunches = dict(shs_cfg.get("lunches", {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"}))
+        lunch_opts = ["L1", "L2", "L3"]
+        for idx_l, l_day in enumerate(["A", "B", "C", "D", "X"]):
+            cur_l = new_lunches.get(l_day, "L2")
+            with l_cols[idx_l]:
+                new_lunches[l_day] = st.selectbox(
+                    f"{l_day} Day Lunch",
+                    options=lunch_opts,
+                    index=lunch_opts.index(cur_l) if cur_l in lunch_opts else 1,
+                    key=f"shs_lunch_{l_day}",
+                )
+
+        st.markdown("**3. Study Hall Room Number by Letter Day (Optional)**")
+        r_cols = st.columns(5)
+        new_rooms = dict(shs_cfg.get("study_rooms", {"A": "", "B": "", "C": "", "D": "", "X": ""}))
+        for idx_r, r_day in enumerate(["A", "B", "C", "D", "X"]):
+            with r_cols[idx_r]:
+                new_rooms[r_day] = st.text_input(
+                    f"{r_day} Study Rm",
+                    value=str(new_rooms.get(r_day, "")),
+                    placeholder="e.g. 214",
+                    key=f"shs_room_{r_day}",
+                )
+
+        st.markdown("**4. Live SHS Calendar Spreadsheet Link (Optional)**")
+        new_sheet_url = st.text_input(
+            "Google Sheet URL (auto-syncs A/B/C/D/X days, holidays & special schedules)",
+            value=str(shs_cfg.get("sheet_url", "")),
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key="shs_sheet_url_input",
+        )
+
+        sc1, sc2 = st.columns([2, 1])
+        with sc1:
+            if st.button("Save My SHS Schedule", key="save_shs_cfg_btn", use_container_width=True):
+                _write_shs_config(user_id, {
+                    "lunches": new_lunches,
+                    "periods": new_periods,
+                    "study_rooms": new_rooms,
+                    "sheet_url": new_sheet_url.strip(),
+                })
+                st.success("Saved your personalized SHS bell schedule!")
+        with sc2:
+            if st.button("Refresh Calendar Sync", key="refresh_shs_sheet_btn", use_container_width=True):
+                fetch_live_shs_spreadsheet_map.clear()
+                st.success("Calendar cache refreshed!")
+
+    if active_letter in ("NO SCHOOL", "WEEKEND") and override_letter == "Auto":
+        note_str = detected_info.get("note") or ("Weekend" if active_letter == "WEEKEND" else "No School")
         st.markdown(
-            f"<div class='header-brand-box'>"
-            f"<div class='app-title'>📑 Assignment Tracker</div>"
-            f"<div class='app-subtitle'>Signed in as <span class='accent-text'>{user_email}</span></div>"
+            f"<div class='ai-day-card' style='text-align:center; padding:26px;'>"
+            f"<div style='font-size:1.25rem; font-weight:800; margin-bottom:6px;'>🎉 {note_str}</div>"
+            f"<div class='card-note-text'>No classes scheduled for {selected_date.strftime('%A, %B %d, %Y')}. Select a rotation day above to preview any bell schedule.</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
+        return
 
-    with hdr_right:
-        b1, b2, b3, b4, b5 = st.columns([1.25, 1, 1.15, 1.05, 0.85])
-        with b1:
-            if st.button("+ Add Task", key="top_add_btn", use_container_width=True):
-                open_add_assignment_dialog(user_id, user_prio_mode)
-        with b2:
-            if st.button("🎨 Theme", key="top_theme_btn", use_container_width=True):
-                open_theme_studio_dialog(user_id)
-        with b3:
-            if st.button("⚙️ Courses", key="top_settings_btn", use_container_width=True):
-                open_settings_and_courses_dialog(user_id)
-        with b4:
-            unseen_dot = " 🔴" if get_seen_updates_cached(user_id) != CURRENT_APP_VERSION else ""
-            if st.button(f"✨ v{CURRENT_APP_VERSION}{unseen_dot}", key="top_updates_btn", use_container_width=True):
-                open_updates_and_feedback_dialog(user_id, user_email)
-        with b5:
-            if st.button("Log Out", key="top_logout_btn", use_container_width=True):
-                clear_all_session_caches()
-                st.session_state.pop("auth_user", None)
-                safe_rerun("app")
+    day_lunch_wave = shs_cfg.get("lunches", {}).get(active_letter, "L2")
+    blocks = build_shs_bell_blocks(
+        letter_day=active_letter,
+        schedule_type=active_sched,
+        lunch_wave=day_lunch_wave,
+        period_classes=shs_cfg.get("periods", {}),
+        study_rooms=shs_cfg.get("study_rooms", {}),
+    )
 
-    # Live Date & SHS Letter Day Banner (Synced from Live Spreadsheet + Calendar Fallback)
-    now_local = get_local_now()
-    today_str = now_local.strftime("%A, %B %d, %Y")
-    shs_cfg = get_shs_cached(user_id)
-    today_info = get_shs_day_info(now_local.date(), custom_sheet_url=str(shs_cfg.get("sheet_url", "")))
-    t_letter = today_info.get("letter", "A")
-    t_sched = today_info.get("schedule", "Daily")
-    t_note = today_info.get("note", "")
+    now_mins = now_local.hour * 60 + now_local.minute
+    is_today = (selected_date == today_date)
+    live_banner_msg = ""
+    active_block_idx = -1
 
-    if t_letter in ("NO SCHOOL", "WEEKEND"):
-        pill_label = f"{t_letter} ({t_note})" if t_note else t_letter
-    else:
-        pill_label = f"{t_letter} Day • {t_sched}" + (f" ({t_note})" if t_note else "")
+    if is_today and blocks:
+        parsed_ranges: List[Tuple[int, int]] = []
+        for b in blocks:
+            st_t, en_t = parse_time_str(b["start"]), parse_time_str(b["end"])
+            if st_t and en_t:
+                parsed_ranges.append((st_t.hour * 60 + st_t.minute, en_t.hour * 60 + en_t.minute))
+            else:
+                parsed_ranges.append((-1, -1))
+
+        first_start = parsed_ranges[0][0]
+        last_end = parsed_ranges[-1][1]
+        if first_start > 0 and now_mins < first_start:
+            live_banner_msg = f"⏰ First bell ({blocks[0]['class_name']}) starts in {first_start - now_mins} mins ({blocks[0]['start']})"
+        elif last_end > 0 and now_mins >= last_end:
+            live_banner_msg = "✅ School day complete!"
+        else:
+            for idx_b, (b_s, b_e) in enumerate(parsed_ranges):
+                if b_s <= now_mins < b_e:
+                    active_block_idx = idx_b
+                    mins_left = b_e - now_mins
+                    live_banner_msg = f"🟢 In Session: {blocks[idx_b]['label']} ({blocks[idx_b]['class_name']}) — {mins_left} min{'s' if mins_left != 1 else ''} remaining"
+                    break
+                if idx_b + 1 < len(parsed_ranges):
+                    next_s = parsed_ranges[idx_b + 1][0]
+                    if b_e <= now_mins < next_s:
+                        mins_to_next = next_s - now_mins
+                        live_banner_msg = f"🚶 Passing Time — {blocks[idx_b + 1]['label']} ({blocks[idx_b + 1]['class_name']}) starts in {mins_to_next} min{'s' if mins_to_next != 1 else ''}"
+                        break
+
+    dropped_txt = SHS_DROPPED_PERIODS.get(active_letter, "")
+    note_extra = f" • {detected_info['note']}" if detected_info.get("note") else ""
+    src_label = detected_info.get("source", "Calendar")
 
     st.markdown(
-        f'<div class="date-banner">Today\'s Date: {today_str} <span class="shs-day-pill">{pill_label}</span></div>',
+        f"<div class='ai-day-card'>"
+        f"<div class='ai-day-header'>"
+        f"<div><span class='ai-day-title'>{active_letter} DAY — {active_sched}</span> <span class='slot-meta-text'>({dropped_txt}{note_extra})</span></div>"
+        f"<div class='day-time-badge'>Lunch: {day_lunch_wave} &bull; Source: {src_label}</div>"
+        f"</div>"
+        f"{f'<div style=\"font-weight:800; font-size:0.86rem; color:var(--accent-readable) !important;\">{live_banner_msg}</div>' if live_banner_msg else ''}"
+        f"</div>",
         unsafe_allow_html=True,
     )
 
-    NAV_OPTIONS = [
-        "Assignments",
-        "Tests & Quizzes",
-        "Other",
-        "SHS Bell Schedule",
-        "Weekly Schedule & AI Planner",
-        "Completed & Recovery",
-    ]
-    active_tab = st.radio(
-        "Navigation",
-        NAV_OPTIONS,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="main_nav_pill",
+    for idx_b, b in enumerate(blocks):
+        is_active = (idx_b == active_block_idx)
+        row_cls = "bell-row bell-row-active" if is_active else "bell-row"
+        live_tag = "<span class='bell-live-tag'>LIVE NOW</span>" if is_active else ""
+        ann_tag = "<span class='slot-meta-text'> &bull; 📢 Announcements</span>" if b.get("ann") == "1" else ""
+        room_tag = f"<span class='slot-meta-text'> &bull; 📍 {b['room']}</span>" if b.get("room") else ""
+        lunch_style = "opacity: 0.92;" if b.get("is_lunch") == "1" else ""
+
+        st.markdown(
+            f"<div class='{row_cls}' style='{lunch_style}'>"
+            f"<div style='display:flex; align-items:center; flex-wrap:wrap; gap:6px;'>"
+            f"<span class='bell-period-badge'>{b['label']}</span>"
+            f"{get_course_badge_html(b['class_name'], is_light=is_light)}"
+            f"{room_tag}{ann_tag}{live_tag}"
+            f"</div>"
+            f"<div style='display:flex; align-items:center; gap:8px;'>"
+            f"<span class='slot-badge'>{b['start']} – {b['end']}</span>"
+            f"<span class='slot-meta-text'>({b['mins']})</span>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )@fragment_decorator
+def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light: bool):
+    # Weekly Commitments on LEFT (1.15), AI Daily Action Plan on RIGHT (1.85)
+    col_sched_side, col_ai_main = st.columns([1.15, 1.85])
+
+    user_schedule = list(get_schedule_cached(user_id))
+    stored_max_daily_work_dict = get_max_work_cached(user_id)
+
+    with col_sched_side:
+        st.markdown("<div class='section-heading'>Weekly Commitments</div>", unsafe_allow_html=True)
+        st.caption("Enter recurring busy blocks so the AI plans around them.")
+
+        with st.form("add_schedule_event_form", clear_on_submit=True):
+            s_day = st.selectbox("Day of Week", DAYS_OF_WEEK)
+            s_title = st.text_input("Event Name", placeholder="e.g. Robotics, Practice")
+            c_time1, c_time2 = st.columns(2)
+            with c_time1:
+                s_start_raw = st.text_input("Start Time", value="3:30 PM", key="sched_start_input")
+            with c_time2:
+                s_end_raw = st.text_input("End Time", value="5:00 PM", key="sched_end_input")
+
+            if st.form_submit_button("Add Block", use_container_width=True):
+                st_time, end_time = parse_time_str(s_start_raw), parse_time_str(s_end_raw)
+                if s_title.strip() and st_time and end_time:
+                    user_schedule.append({
+                        "id": str(uuid.uuid4()), "day": s_day, "title": s_title.strip(),
+                        "start": st_time.strftime("%I:%M %p").lstrip("0"),
+                        "end": end_time.strftime("%I:%M %p").lstrip("0"),
+                    })
+                    _write_schedule_file(user_id, user_schedule)
+
+        st.markdown("---")
+        if user_schedule:
+            for idx, item in enumerate(user_schedule):
+                b_id = item.get("id", str(idx))
+                col_item_a, col_item_b = st.columns([4, 1.3])
+                with col_item_a:
+                    st.markdown(f"<span class='sched-item-text'><b>{item.get('day')}</b>: {item.get('title')} ({item.get('start')} - {item.get('end')})</span>", unsafe_allow_html=True)
+                with col_item_b:
+                    st.button("Remove", key=f"del_sched_{b_id}", on_click=on_remove_schedule_block, args=(user_id, b_id), use_container_width=True)
+
+    with col_ai_main:
+        st.markdown("<div class='section-heading'>AI Daily Action Plan</div>", unsafe_allow_html=True)
+        st.caption("Optimized timeline across available days based on due dates & priority.")
+
+        undo_state = st.session_state.get("_undo_slot_state")
+        if undo_state:
+            if (get_local_now() - undo_state["time"]).total_seconds() < 15:
+                u_col1, u_col2 = st.columns([4.2, 1.2])
+                with u_col1:
+                    st.markdown(f"<div class='undo-toast-box'><span style='font-size:0.84rem;'>Finished <b>{undo_state['title']}</b> for today</span></div>", unsafe_allow_html=True)
+                with u_col2:
+                    st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True)
+            else:
+                st.session_state.pop("_undo_slot_state", None)
+
+        ctrl_col1, ctrl_col2 = st.columns([1.5, 1.2])
+        with ctrl_col1:
+            gen_plan_click = st.button("Re-Calculate Plan", key="btn_gen_ai_plan", use_container_width=True)
+        with ctrl_col2:
+            show_time_slots = st.toggle("Show Time Slots", value=True, key="toggle_show_time_slots")
+
+        with st.expander("⏱️ Customize Daily Work Limits (Per Day)", expanded=False):
+            st.caption("Set maximum allowed study/work time independently for each day of the week:")
+            opts = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 300]
+            day_cols = st.columns(7)
+            new_limits_dict = {}
+            for d_idx, d_name in enumerate(DAYS_OF_WEEK):
+                with day_cols[d_idx]:
+                    cur_val = stored_max_daily_work_dict.get(d_name, 60)
+                    new_limits_dict[d_name] = st.selectbox(d_name[:3], options=opts, index=opts.index(cur_val) if cur_val in opts else 4, key=f"p_limit_{d_name}", format_func=lambda x: f"{x}m")
+            if new_limits_dict != stored_max_daily_work_dict:
+                _write_max_work_config(user_id, new_limits_dict)
+                stored_max_daily_work_dict = new_limits_dict
+
+        cached_assignments = get_assignments_cached(user_id)
+        if gen_plan_click or "_ai_plan_result" not in st.session_state:
+            st.session_state["_ai_plan_result"] = generate_ai_study_plan(cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict)
+
+        plan_res = st.session_state["_ai_plan_result"]
+        status, plan = plan_res.get("status"), plan_res.get("plan", {})
+
+        if status == "no_tasks":
+            st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
+        elif status == "all_done":
+            st.success("All assignments marked completed!")
+        elif status == "success" and plan:
+            completed_set = set(get_completed_slots_cached(user_id).keys())
+            for day_name, day_data in plan.items():
+                if not isinstance(day_data, dict):
+                    continue
+                visible_slots = [s for s in day_data.get("slots", []) if s.get("slot_key") not in completed_set]
+                day_cap_mins = stored_max_daily_work_dict.get(day_name, 60)
+                scheduled_mins = sum(s.get("eta_mins", 0) for s in visible_slots)
+
+                st.markdown(
+                    f'<div class="ai-day-card"><div class="ai-day-header">'
+                    f'<span class="ai-day-title">{day_name}</span>'
+                    f'<div class="day-time-badge">{format_mins_to_hrs_mins(scheduled_mins)} scheduled <span class="time-max-cap">/ Max {format_mins_to_hrs_mins(day_cap_mins)}</span></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if day_data.get("busy"):
+                    st.caption("Busy: " + ", ".join(day_data["busy"]))
+
+                if visible_slots:
+                    for idx_slot, s in enumerate(visible_slots):
+                        s_key = s.get("slot_key")
+                        slot_prio_str = format_priority_display(s.get("priority"), user_prio_mode)
+                        slot_dur_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
+                        c_chk, c_text = st.columns([0.45, 7.55])
+                        with c_chk:
+                            st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s["title"], s, user_id))
+                        with c_text:
+                            prefix_html = f"<span class='slot-badge'>{s['time']}</span> — " if show_time_slots else ""
+                            st.markdown(
+                                f"{prefix_html}<span class='slot-title-text'>{s['title']}</span> {get_course_badge_html(s['course'], is_light=is_light)} "
+                                f"<span class='slot-meta-text'>| Priority: {slot_prio_str} ({slot_dur_str})</span>",
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.markdown("<span class='slot-meta-text'>No work scheduled for this day. Free time!</span>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+
+@fragment_decorator
+def render_completed_recovery_fragment(user_id: str, is_light: bool):
+    st.markdown("<div class='section-heading'>Completed Tasks & Recovery Center</div>", unsafe_allow_html=True)
+    st.caption("Finished assignments stay here until their due date passes. Restoring an item returns it to your active tab with its previous status.")
+
+    rec_col1, rec_col2 = st.columns(2)
+    with rec_col1:
+        st.markdown("<div class='section-heading' style='font-size:0.95rem;'>1. Daily Planner Slots Checked Today</div>", unsafe_allow_html=True)
+        completed_slots_dict = get_completed_slots_cached(user_id)
+        if completed_slots_dict:
+            for s_key, s_data in list(completed_slots_dict.items()):
+                c_info, c_act = st.columns([3.8, 1.6])
+                with c_info:
+                    st.markdown(
+                        f"<div class='recovery-card'><div><b>{s_data.get('title')}</b> {get_course_badge_html(s_data.get('course'), is_light=is_light)}"
+                        f"<div class='card-note-text'>{s_data.get('day_name')} &bull; {s_data.get('time')}</div></div></div>",
+                        unsafe_allow_html=True,
+                    )
+                with c_act:
+                    st.button("Restore", key=f"rec_slot_{s_key}", on_click=restore_single_daily_slot, args=(s_key, user_id), use_container_width=True)
+        else:
+            st.info("No daily planner slots marked completed today.")
+
+    with rec_col2:
+        st.markdown("<div class='section-heading' style='font-size:0.95rem;'>2. Finished Assignments (Database)</div>", unsafe_allow_html=True)
+        df_all = get_assignments_cached(user_id)
+        df_done_db = df_all[df_all["status"] == "Done"].copy()
+        if not df_done_db.empty:
+            for _, r_done in df_done_db.iterrows():
+                r_aid = r_done.get("id")
+                c_info_db, c_act_db = st.columns([3.8, 1.6])
+                with c_info_db:
+                    st.markdown(
+                        f"<div class='recovery-card'><div><b>{r_done.get('title')}</b> {get_course_badge_html(r_done.get('course'), is_light=is_light)}"
+                        f"<div class='card-note-text'>Type: {r_done.get('atype')} &bull; Due: {r_done.get('due_date')}</div></div></div>",
+                        unsafe_allow_html=True,
+                    )
+                with c_act_db:
+                    st.button("Restore", key=f"rec_db_{r_aid}", on_click=restore_single_assignment, args=(r_done.to_dict(),), use_container_width=True)
+        else:
+            st.info("No main database assignments currently marked as 'Done'.")
+
+
+# -----------------------
+# Main Application Entry
+# -----------------------
+user = st.session_state.get("user")
+if not user:
+    render_terminal_auth_page()
+    st.stop()
+
+user_id = str(user.get("id"))
+email = str(user.get("email", "User"))
+
+hydrate_user_session(user_id)
+user_theme = get_theme_cached(user_id)
+is_light_theme = (user_theme.get("mode") == "Light")
+st.markdown(build_theme_css(user_theme), unsafe_allow_html=True)
+
+active_prio_mode = get_prio_cached(user_id)
+seen_updates_ver = get_seen_updates_cached(user_id)
+user_prio_mode = active_prio_mode or "Low / Medium / High"
+
+pending_edit_aid = st.session_state.pop("_pending_edit_aid", None)
+if pending_edit_aid:
+    show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
+elif seen_updates_ver != CURRENT_APP_VERSION:
+    show_updates_dialog(user_id, is_first_time=True)
+elif not get_courses_cached(user_id):
+    show_welcome_courses_dialog(user_id)
+elif not active_prio_mode:
+    show_prio_config_dialog(user_id)
+
+logo_fill = "#0f172a" if is_light_theme else "#ffffff"
+col_header_left, col_header_right = st.columns([1.8, 3.2])
+
+with col_header_left:
+    st.markdown(
+        f"""
+        <div class='header-brand-box'>
+            <div style='display:flex; align-items:center; gap:10px;'>
+                <svg width='26' height='26' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <rect x='2' y='3' width='12' height='12' rx='2' fill='{logo_fill}' opacity='0.45'/>
+                    <rect x='6' y='7' width='12' height='12' rx='2' fill='{logo_fill}' opacity='0.75'/>
+                    <rect x='10' y='11' width='12' height='12' rx='2' fill='{logo_fill}'/>
+                </svg>
+                <span class='app-title' style='line-height:1;'>Assignment Tracker</span>
+            </div>
+            <div class='app-subtitle'>{email} &bull; <span class='accent-text'>System: {user_prio_mode}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    if active_tab == "Assignments":
-        render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light=is_light_theme, key_prefix="reg_")
-    elif active_tab == "Tests & Quizzes":
-        render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light=is_light_theme, key_prefix="tests_")
-    elif active_tab == "Other":
-        render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light=is_light_theme, key_prefix="other_")
-    elif active_tab == "SHS Bell Schedule":
-        render_shs_bell_schedule_fragment(user_id, is_light=is_light_theme)
-    elif active_tab == "Weekly Schedule & AI Planner":
-        render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light=is_light_theme)
-    elif active_tab == "Completed & Recovery":
-        render_completed_recovery_fragment(user_id, is_light=is_light_theme)
+with col_header_right:
+    b1, b2, b3, b4, b5, b6, b7 = st.columns([1.0, 0.95, 0.95, 0.9, 0.95, 1.0, 0.95])
+    with b1:
+        if st.button("+ Task", key="toolbar_add", use_container_width=True):
+            show_add_assignment_dialog(user_id, user_prio_mode)
+    with b2:
+        if st.button("Courses", key="toolbar_courses", use_container_width=True):
+            show_manage_courses_dialog(user_id)
+    with b3:
+        if st.button("Priority", key="toolbar_prio_sys", use_container_width=True):
+            show_prio_config_dialog(user_id)
+    with b4:
+        if st.button("Theme", key="toolbar_theme", use_container_width=True):
+            show_theme_dialog(user_id)
+    with b5:
+        if st.button("Updates", key="toolbar_updates", use_container_width=True):
+            show_updates_dialog(user_id, is_first_time=False)
+    with b6:
+        if st.button("Feedback", key="toolbar_feedback", use_container_width=True):
+            show_feedback_dialog(user_id, email)
+    with b7:
+        if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
+            sign_out_user()
 
+now_banner = get_local_now()
+today_str = now_banner.strftime("%A, %B %d, %Y")
+shs_today_cfg = get_shs_cached(user_id)
+shs_today_info = get_shs_day_info(now_banner.date(), shs_today_cfg.get("sheet_url", ""))
+shs_letter_today = shs_today_info.get("letter", "")
+shs_sched_today = shs_today_info.get("schedule", "Daily")
 
-if __name__ == "__main__":
-    main()
+if shs_letter_today in ("A", "B", "C", "D", "X"):
+    shs_pill_html = f"<span class='shs-day-pill'>SHS {shs_letter_today} Day &bull; {shs_sched_today}</span>"
+elif shs_letter_today == "NO SCHOOL":
+    shs_pill_html = f"<span class='shs-day-pill'>No School ({shs_today_info.get('note', 'Holiday')})</span>"
+else:
+    shs_pill_html = "<span class='shs-day-pill'>Weekend</span>"
+
+st.markdown(f'<div class="date-banner">Today\'s Date: {today_str} {shs_pill_html}</div>', unsafe_allow_html=True)
+
+NAV_OPTIONS = [
+    "Assignments",
+    "Tests & Quizzes",
+    "Other",
+    "SHS Bell Schedule",
+    "Weekly Schedule & AI Planner",
+    "Completed & Recovery",
+]
+active_tab = st.radio("Navigation", NAV_OPTIONS, horizontal=True, label_visibility="collapsed", key="main_nav_pill")
+
+if active_tab == "Assignments":
+    render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light=is_light_theme, key_prefix="reg_")
+elif active_tab == "Tests & Quizzes":
+    render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light=is_light_theme, key_prefix="tests_")
+elif active_tab == "Other":
+    render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light=is_light_theme, key_prefix="other_")
+elif active_tab == "SHS Bell Schedule":
+    render_shs_bell_schedule_fragment(user_id, is_light=is_light_theme)
+elif active_tab == "Weekly Schedule & AI Planner":
+    render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light=is_light_theme)
+elif active_tab == "Completed & Recovery":
+    render_completed_recovery_fragment(user_id, is_light=is_light_theme)
