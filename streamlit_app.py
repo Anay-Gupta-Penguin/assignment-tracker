@@ -2773,7 +2773,10 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
             f"</div>"
             f"</div>",
             unsafe_allow_html=True,
-        )@fragment_decorator
+        )
+        
+        
+        @fragment_decorator
 def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light: bool):
     # Weekly Commitments on LEFT (1.15), AI Daily Action Plan on RIGHT (1.85)
     col_sched_side, col_ai_main = st.columns([1.15, 1.85])
