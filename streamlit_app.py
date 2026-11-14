@@ -9,13 +9,12 @@ import csv
 import hashlib
 import io
 import json
-import os
 import re
 import threading
 import urllib.request
 import uuid
 from datetime import datetime, date, timedelta, time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import streamlit as st
@@ -856,7 +855,10 @@ def build_theme_css(theme_cfg: Dict[str, Any]) -> str:
     out = CSS_TEMPLATE
     for token, val in replacements.items():
         out = out.replace(token, val)
-    return out# -----------------------
+    return out
+
+
+# -----------------------
 # Application Constants
 # -----------------------
 DEFAULT_DOMAIN = "@simsburyschools.net"
@@ -1509,7 +1511,10 @@ def _unpack_notes(raw_notes: Any) -> Tuple[str, str]:
 
 
 def _hash_pw(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()# -----------------------
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+# -----------------------
 # Single-Query Hydration & Background DB Writers
 # -----------------------
 def clear_all_session_caches():
@@ -1980,7 +1985,10 @@ def restore_single_daily_slot(slot_key: str, user_id: str):
     _write_completed_slots(user_id, completed_today)
     for k in list(st.session_state.keys()):
         if slot_key in k:
-            st.session_state[k] = False# -----------------------
+            st.session_state[k] = False
+
+
+# -----------------------
 # Date & Time Helpers + AI Scheduler
 # -----------------------
 def parse_date_iso_or_empty(s: Any) -> Optional[date]:
@@ -2021,7 +2029,11 @@ def days_left(d: Optional[date]) -> Tuple[str, int]:
     return (f"{delta}d left" if delta >= 0 else f"{delta}d overdue", delta)
 
 
-def generate_ai_study_plan(df_tasks: pd.DataFrame, schedule: List[Dict[str, Any]], max_daily_mins_config: Dict[str, int] | int = 60) -> Dict[str, Any]:
+def generate_ai_study_plan(
+    df_tasks: pd.DataFrame,
+    schedule: List[Dict[str, Any]],
+    max_daily_mins_config: Union[Dict[str, int], int] = 60,
+) -> Dict[str, Any]:
     if df_tasks.empty:
         return {"status": "no_tasks", "plan": {}}
     incomplete = df_tasks[df_tasks["status"] != "Done"].copy()
@@ -2366,7 +2378,10 @@ def show_feedback_dialog(user_id: str, email: str):
                 if submit_user_feedback(user_id, email, category, rating, message):
                     st.success("Thank you! Your feedback has been saved.")
                 else:
-                    st.error("Unable to submit feedback right now.")@dialog_decorator("Welcome! Setup Your Classes")
+                    st.error("Unable to submit feedback right now.")
+
+
+@dialog_decorator("Welcome! Setup Your Classes")
 def show_welcome_courses_dialog(user_id: str):
     st.markdown("### Setup Your Courses")
     courses_input = st.text_area("Enter your subjects (comma separated):", value="MATH, SCIENCE, ENGLISH, HISTORY, OTHER")
@@ -2740,6 +2755,11 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
     dropped_txt = SHS_DROPPED_PERIODS.get(active_letter, "")
     note_extra = f" • {detected_info['note']}" if detected_info.get("note") else ""
     src_label = detected_info.get("source", "Calendar")
+    live_banner_html = (
+        f"<div style='font-weight:800; font-size:0.86rem; color:var(--accent-readable) !important;'>{live_banner_msg}</div>"
+        if live_banner_msg
+        else ""
+    )
 
     st.markdown(
         f"<div class='ai-day-card'>"
@@ -2747,7 +2767,7 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
         f"<div><span class='ai-day-title'>{active_letter} DAY — {active_sched}</span> <span class='slot-meta-text'>({dropped_txt}{note_extra})</span></div>"
         f"<div class='day-time-badge'>Lunch: {day_lunch_wave} &bull; Source: {src_label}</div>"
         f"</div>"
-        f"{f'<div style=\"font-weight:800; font-size:0.86rem; color:var(--accent-readable) !important;\">{live_banner_msg}</div>' if live_banner_msg else ''}"
+        f"{live_banner_html}"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -2774,11 +2794,10 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
             f"</div>",
             unsafe_allow_html=True,
         )
-        
-        
-        @fragment_decorator
+
+
+@fragment_decorator
 def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light: bool):
-    # Weekly Commitments on LEFT (1.15), AI Daily Action Plan on RIGHT (1.85)
     col_sched_side, col_ai_main = st.columns([1.15, 1.85])
 
     user_schedule = list(get_schedule_cached(user_id))
