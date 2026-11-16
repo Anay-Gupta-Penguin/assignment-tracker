@@ -1,5 +1,5 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Classroom Sync & Theme Studio
+📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Classroom Sync, Theme Studio & Beta/Fallback Engine
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import io
 import json
 import re
 import threading
+import traceback
 import urllib.request
 import uuid
 from datetime import datetime, date, timedelta, time
@@ -33,7 +34,31 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.6"
+CURRENT_APP_VERSION = "3.8"
+ADMIN_EMAILS = {"30guptaa@simsburyschools.net"}
+
+
+def is_admin_user(email: str) -> bool:
+    return str(email or "").strip().lower() in ADMIN_EMAILS
+
+
+# -----------------------
+# Central Beta & Feature Release Registry
+# Add any future feature here with "default_status": "beta" to automatically get:
+# - Regular-user Beta alerts & top-of-feature Beta testing banner
+# - Admin-only "Promote to Public Release" button (no redeploy needed)
+# - Automatic Public Release popup alert for all users when promoted
+# -----------------------
+FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
+    "classroom_sync_v2": {
+        "name": "Google Classroom Instruction & Auto-Sync",
+        "version": "3.8",
+        "default_status": "beta",
+        "location_hint": "Sync button in the top toolbar",
+        "beta_summary": "Fetches teacher instructions directly from Classroom posts and remembers dismissed synced tasks.",
+        "release_summary": "Google Classroom Instruction & Auto-Sync is now officially live! Classroom imports now pull teacher instructions into task notes and remember dismissed items.",
+    },
+}
 
 
 def get_local_now() -> datetime:
@@ -479,6 +504,55 @@ div[data-testid="stDialog"] div[role="dialog"] {
     font-weight: 800;
 }
 
+.beta-banner-box {
+    background: rgba(245, 158, 11, 0.14);
+    border: 1.5px solid rgba(245, 158, 11, 0.55);
+    border-radius: 11px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+}
+
+.admin-workbench-box {
+    background: rgba(99, 102, 241, 0.15);
+    border: 1.5px solid rgba(99, 102, 241, 0.55);
+    border-radius: 11px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+}
+
+.crash-alert-box {
+    background: rgba(244, 63, 94, 0.16);
+    border: 1.5px solid rgba(244, 63, 94, 0.65);
+    border-radius: 11px;
+    padding: 11px 14px;
+    margin-bottom: 12px;
+}
+
+.release-banner-box {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1.5px solid rgba(16, 185, 129, 0.55);
+    border-radius: 11px;
+    padding: 11px 14px;
+    margin-bottom: 12px;
+}
+
+.msg-bubble-user {
+    background: var(--card-bg);
+    border: 1.5px solid var(--card-border);
+    border-radius: 10px;
+    padding: 9px 12px;
+    margin-bottom: 6px;
+}
+
+.msg-bubble-admin {
+    background: var(--accent-soft);
+    border: 1.5px solid var(--accent-border);
+    border-radius: 10px;
+    padding: 9px 12px;
+    margin-left: 18px;
+    margin-bottom: 6px;
+}
+
 .card-task-title {
     font-size: 1.08rem;
     font-weight: 800;
@@ -515,6 +589,7 @@ div[data-testid="stDialog"] div[role="dialog"] {
     font-size: 0.74rem;
     color: var(--text-muted) !important;
     margin-top: 6px;
+    line-height: 1.35;
 }
 
 .section-heading {
@@ -690,6 +765,17 @@ div[data-testid="stDialog"] div[role="dialog"] {
 .update-ver-badge {
     background: var(--accent);
     color: var(--on-accent-text) !important;
+    padding: 2px 8px;
+    border-radius: 5px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    margin-right: 6px;
+}
+
+.update-beta-badge {
+    background: #f59e0b;
+    color: #0f172a !important;
     padding: 2px 8px;
     border-radius: 5px;
     font-size: 0.72rem;
@@ -885,8 +971,10 @@ SYSTEM_TITLES = {
     "__SYSTEM_MAX_WORK_CONFIG__",
     "__SYSTEM_COMPLETED_SLOTS__",
     "__SYSTEM_SEEN_UPDATES__",
+    "__SYSTEM_SEEN_RELEASES__",
     "__SYSTEM_THEME_CONFIG__",
     "__SYSTEM_SHS_CONFIG__",
+    "__SYSTEM_IGNORED_SYNC__",
 }
 
 
@@ -1363,9 +1451,50 @@ def init_db_once():
                 category TEXT NOT NULL,
                 rating INTEGER,
                 message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                is_read_admin INTEGER DEFAULT 0,
+                is_read_user INTEGER DEFAULT 1
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feedback_replies (
+                id TEXT PRIMARY KEY,
+                feedback_id TEXT NOT NULL,
+                sender_email TEXT NOT NULL,
+                is_admin INTEGER NOT NULL,
+                message TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feature_flags (
+                feature_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS feature_errors (
+                id TEXT PRIMARY KEY,
+                feature_key TEXT NOT NULL,
+                feature_name TEXT NOT NULL,
+                error_msg TEXT NOT NULL,
+                traceback_txt TEXT,
+                user_email TEXT,
+                is_resolved INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+        """))
+
+    for alter_sql in [
+        "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS is_read_admin INTEGER DEFAULT 0;",
+        "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS is_read_user INTEGER DEFAULT 1;",
+    ]:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(alter_sql))
+        except Exception:
+            pass
     return True
 
 
@@ -1373,6 +1502,199 @@ try:
     init_db_once()
 except Exception as e:
     st.error(f"Database Connection Error: {e}")
+
+
+# -----------------------
+# Global Feature Flags, Fallback Guard & Error Alerting
+# -----------------------
+def get_global_feature_statuses(force_refresh: bool = False) -> Dict[str, str]:
+    if not force_refresh and "_global_feature_statuses" in st.session_state:
+        return st.session_state["_global_feature_statuses"]
+
+    statuses: Dict[str, str] = {k: v.get("default_status", "released") for k, v in FEATURE_REGISTRY.items()}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT feature_key, status FROM feature_flags")).mappings().all()
+        db_map = {str(r["feature_key"]): str(r["status"]) for r in rows}
+        missing = []
+        for f_key, meta in FEATURE_REGISTRY.items():
+            if f_key in db_map:
+                statuses[f_key] = db_map[f_key]
+            else:
+                missing.append((f_key, meta.get("default_status", "released")))
+        if missing:
+            now_iso = get_local_now().isoformat()
+            with engine.begin() as conn:
+                for fk, st_val in missing:
+                    conn.execute(
+                        text("INSERT INTO feature_flags (feature_key, status, updated_at) VALUES (:k, :s, :u) ON CONFLICT (feature_key) DO NOTHING"),
+                        {"k": fk, "s": st_val, "u": now_iso},
+                    )
+    except Exception:
+        pass
+
+    st.session_state["_global_feature_statuses"] = statuses
+    return statuses
+
+
+def is_feature_in_beta(feature_key: str) -> bool:
+    return get_global_feature_statuses().get(feature_key, "released") == "beta"
+
+
+def promote_feature_to_public(feature_key: str) -> None:
+    now_iso = get_local_now().isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO feature_flags (feature_key, status, updated_at)
+                VALUES (:k, 'released', :u)
+                ON CONFLICT (feature_key) DO UPDATE SET status = 'released', updated_at = EXCLUDED.updated_at;
+            """),
+            {"k": feature_key, "u": now_iso},
+        )
+    st.session_state.pop("_global_feature_statuses", None)
+
+
+def revert_feature_to_beta(feature_key: str) -> None:
+    now_iso = get_local_now().isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO feature_flags (feature_key, status, updated_at)
+                VALUES (:k, 'beta', :u)
+                ON CONFLICT (feature_key) DO UPDATE SET status = 'beta', updated_at = EXCLUDED.updated_at;
+            """),
+            {"k": feature_key, "u": now_iso},
+        )
+    st.session_state.pop("_global_feature_statuses", None)
+
+
+def report_feature_error(feature_key: str, error_msg: str, traceback_txt: str, user_email: str) -> None:
+    meta = FEATURE_REGISTRY.get(feature_key, {})
+    f_name = meta.get("name", feature_key)
+    now_iso = get_local_now().isoformat()
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT id FROM feature_errors WHERE feature_key = :fk AND error_msg = :em AND is_resolved = 0 LIMIT 1"),
+                {"fk": feature_key, "em": error_msg[:400]},
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    text("UPDATE feature_errors SET created_at = :ca, user_email = :ue WHERE id = :id"),
+                    {"ca": now_iso, "ue": user_email, "id": existing.id},
+                )
+            else:
+                conn.execute(
+                    text("""
+                        INSERT INTO feature_errors (id, feature_key, feature_name, error_msg, traceback_txt, user_email, is_resolved, created_at)
+                        VALUES (:id, :fk, :fn, :em, :tb, :ue, 0, :ca)
+                    """),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "fk": feature_key,
+                        "fn": f_name,
+                        "em": error_msg[:400],
+                        "tb": traceback_txt[:2500],
+                        "ue": user_email,
+                        "ca": now_iso,
+                    },
+                )
+    except Exception:
+        pass
+
+
+def get_unresolved_feature_errors() -> List[Dict[str, Any]]:
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM feature_errors WHERE is_resolved = 0 ORDER BY created_at DESC LIMIT 20")
+            ).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def resolve_feature_error(error_id: str) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE feature_errors SET is_resolved = 1 WHERE id = :id"), {"id": error_id})
+    except Exception:
+        pass
+
+
+def run_with_fallback(
+    feature_key: str,
+    primary_fn: Callable[[], Any],
+    fallback_fn: Callable[[], Any],
+    user_email: str,
+) -> Any:
+    """
+    Executes new/beta feature code inside a crash-proof boundary.
+    If anything raises an exception, it logs the error for the admin and seamlessly
+    renders fallback_fn() so the dashboard never goes down.
+    """
+    try:
+        return primary_fn()
+    except Exception as exc:
+        err_msg = f"{type(exc).__name__}: {exc}"
+        tb_txt = traceback.format_exc()
+        report_feature_error(feature_key, err_msg, tb_txt, user_email)
+        if not is_admin_user(user_email):
+            st.info("🛡️ Standard backup mode active while we fine-tune the latest update.")
+        return fallback_fn()
+
+
+def render_feature_stage_header(feature_key: str, user_id: str, email: str) -> None:
+    """
+    Renders the top bar for any feature registered in FEATURE_REGISTRY:
+    - Regular users: Shows a Beta testing banner ONLY while status == 'beta'.
+    - Admin (30guptaa@simsburyschools.net): Never sees the user Beta warning; sees
+      the Admin Beta Workbench with a 'Promote to Public Release' button (and fallback test).
+    """
+    meta = FEATURE_REGISTRY.get(feature_key)
+    if not meta:
+        return
+    in_beta = is_feature_in_beta(feature_key)
+    f_name = meta.get("name", feature_key)
+
+    if is_admin_user(email):
+        if in_beta:
+            st.markdown(
+                f"<div class='admin-workbench-box'>"
+                f"<div style='font-weight:800; font-size:0.86rem; margin-bottom:2px;'>🛠️ Admin Beta Workbench — {f_name}</div>"
+                f"<div style='font-size:0.78rem;'>Regular users currently see the Beta Testing alert on this feature. You do not see user beta popups.</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            ac1, ac2 = st.columns([2.2, 1.2])
+            with ac1:
+                if st.button("🚀 Promote to Public Release (End Beta)", key=f"promote_beta_{feature_key}", use_container_width=True):
+                    promote_feature_to_public(feature_key)
+                    st.success(f"🎉 '{f_name}' is now in Public Release! All users will receive the Public Release update alert.")
+                    safe_rerun("app")
+            with ac2:
+                if st.button("🧪 Test Fallback Alert", key=f"test_fb_{feature_key}", use_container_width=True):
+                    report_feature_error(feature_key, "SimulatedAdminFallbackTest: Manual health check triggered", "Manual test from Admin Beta Workbench", email)
+                    st.warning("Fallback alert logged! Check the red alert banner at the top of your dashboard.")
+        else:
+            with st.expander("🛠️ Admin Feature Status: Public Release (Live)", expanded=False):
+                st.caption(f"'{f_name}' is currently live for all users.")
+                if st.button("↩️ Revert Back to Beta Testing", key=f"revert_beta_{feature_key}"):
+                    revert_feature_to_beta(feature_key)
+                    safe_rerun("app")
+    else:
+        if in_beta:
+            st.markdown(
+                f"<div class='beta-banner-box'>"
+                f"<div style='font-weight:800; font-size:0.86rem; margin-bottom:2px;'>🧪 Beta Feature (In Testing) — {f_name}</div>"
+                f"<div style='font-size:0.79rem;'>This feature is currently in testing. Tell me if anything is wrong or buggy!</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button("💬 Report Beta Issue / Send Feedback", key=f"beta_fb_btn_{feature_key}", use_container_width=True):
+                st.session_state["_open_feedback_prefill"] = f"Beta Issue: {f_name}"
+                safe_rerun("app")
 
 
 # -----------------------
@@ -1531,9 +1853,11 @@ def clear_all_session_caches():
     for k in [
         "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
         "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
-        "cfg_seen_updates", "cfg_theme", "cfg_shs", "_ai_plan_result",
-        "_undo_slot_state", "_hydrated_uid", "_pending_edit_aid",
-        "_classroom_sync_preview", "_classroom_auto_sync", "_sync_banner_msg",
+        "cfg_seen_updates", "cfg_seen_releases", "cfg_theme", "cfg_shs",
+        "cfg_ignored_sync", "_ai_plan_result", "_undo_slot_state",
+        "_hydrated_uid", "_pending_edit_aid", "_classroom_sync_preview",
+        "_classroom_auto_sync", "_sync_banner_msg", "_global_feature_statuses",
+        "_open_feedback_prefill",
     ]:
         st.session_state.pop(k, None)
 
@@ -1592,6 +1916,8 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     max_work: Dict[str, int] = {d: 60 for d in DAYS_OF_WEEK}
     completed_slots: Dict[str, Dict[str, Any]] = {}
     seen_updates_ver: str = ""
+    seen_releases: List[str] = []
+    ignored_sync: List[str] = []
     theme_cfg: Dict[str, Any] = dict(DEFAULT_THEME_CONFIG)
     shs_cfg: Dict[str, Any] = {
         "lunches": {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"},
@@ -1644,6 +1970,20 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
                 pass
         elif r_title == "__SYSTEM_SEEN_UPDATES__":
             seen_updates_ver = str(r_notes or "").strip()
+        elif r_title == "__SYSTEM_SEEN_RELEASES__":
+            try:
+                parsed = json.loads(str(r_notes or "[]"))
+                if isinstance(parsed, list):
+                    seen_releases = [str(x) for x in parsed]
+            except Exception:
+                pass
+        elif r_title == "__SYSTEM_IGNORED_SYNC__":
+            try:
+                parsed = json.loads(str(r_notes or "[]"))
+                if isinstance(parsed, list):
+                    ignored_sync = [str(x).strip().lower() for x in parsed if str(x).strip()]
+            except Exception:
+                pass
         elif r_title == "__SYSTEM_THEME_CONFIG__":
             try:
                 parsed = json.loads(str(r_notes or "{}"))
@@ -1692,6 +2032,8 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     st.session_state["cfg_completed_slots"] = completed_slots
     st.session_state["cfg_completed_slots_date"] = today_iso
     st.session_state["cfg_seen_updates"] = seen_updates_ver
+    st.session_state["cfg_seen_releases"] = seen_releases
+    st.session_state["cfg_ignored_sync"] = ignored_sync
     st.session_state["cfg_theme"] = theme_cfg
     st.session_state["cfg_shs"] = shs_cfg
     st.session_state["_hydrated_uid"] = user_id
@@ -1708,6 +2050,17 @@ def get_courses_cached(user_id: str) -> List[str]:
 def _write_courses_file(user_id: str, courses: List[str]) -> None:
     st.session_state["cfg_courses"] = courses
     _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_courses_config", user_id), user_id, "__SYSTEM_COURSES__", json.dumps(courses), get_local_now().isoformat())
+
+
+def get_ignored_sync_cached(user_id: str) -> List[str]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_ignored_sync", [])
+
+
+def _write_ignored_sync(user_id: str, ignored_titles: List[str]) -> None:
+    cleaned = list(dict.fromkeys([str(x).strip().lower() for x in ignored_titles if str(x).strip()]))[-80:]
+    st.session_state["cfg_ignored_sync"] = cleaned
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_ignored_sync_config", user_id), user_id, "__SYSTEM_IGNORED_SYNC__", json.dumps(cleaned), get_local_now().isoformat())
 
 
 def get_schedule_cached(user_id: str) -> List[Dict[str, Any]]:
@@ -1740,6 +2093,17 @@ def get_seen_updates_cached(user_id: str) -> str:
 def _write_seen_updates(user_id: str, version_str: str) -> None:
     st.session_state["cfg_seen_updates"] = version_str
     _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_seen_updates_config", user_id), user_id, "__SYSTEM_SEEN_UPDATES__", version_str, get_local_now().isoformat())
+
+
+def get_seen_releases_cached(user_id: str) -> List[str]:
+    hydrate_user_session(user_id)
+    return st.session_state.get("cfg_seen_releases", [])
+
+
+def _write_seen_releases(user_id: str, release_keys: List[str]) -> None:
+    cleaned = list(dict.fromkeys([str(k) for k in release_keys if str(k)]))
+    st.session_state["cfg_seen_releases"] = cleaned
+    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_seen_releases_config", user_id), user_id, "__SYSTEM_SEEN_RELEASES__", json.dumps(cleaned), get_local_now().isoformat())
 
 
 def get_theme_cached(user_id: str) -> Dict[str, Any]:
@@ -1858,6 +2222,18 @@ def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
 def delete_assignment(assignment_id: str) -> None:
     if "df_cached" in st.session_state and not st.session_state["df_cached"].empty:
         df = st.session_state["df_cached"]
+        matches = df[df["id"] == assignment_id]
+        if not matches.empty:
+            rec = matches.iloc[0]
+            note_low = str(rec.get("notes") or "").lower()
+            if "classroom" in note_low:
+                uid = str(rec.get("user_id") or "")
+                t_low = str(rec.get("title") or "").strip().lower()
+                if uid and t_low:
+                    ign = list(get_ignored_sync_cached(uid))
+                    if t_low not in ign:
+                        ign.append(t_low)
+                        _write_ignored_sync(uid, ign)
         st.session_state["df_cached"] = df[df["id"] != assignment_id].reset_index(drop=True)
     st.session_state.pop("_ai_plan_result", None)
     _run_bg_sql(_db_delete_assignment_worker, assignment_id)
@@ -1879,7 +2255,7 @@ def restore_single_assignment(row_dict: Dict[str, Any]):
 
 
 # -----------------------
-# Authentication & Feedback Handlers
+# Authentication & Two-Way Feedback Messaging System
 # -----------------------
 def sign_up_user(email: str, password: str) -> Dict[str, Any]:
     email_clean = email.lower().strip()
@@ -1918,8 +2294,8 @@ def submit_user_feedback(user_id: str, email: str, category: str, rating: int, m
     with engine.begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO feedback (id, user_id, email, category, rating, message, created_at)
-                VALUES (:id, :uid, :em, :cat, :rat, :msg, :ca)
+                INSERT INTO feedback (id, user_id, email, category, rating, message, created_at, is_read_admin, is_read_user)
+                VALUES (:id, :uid, :em, :cat, :rat, :msg, :ca, 0, 1)
             """),
             {
                 "id": fb_id,
@@ -1932,6 +2308,100 @@ def submit_user_feedback(user_id: str, email: str, category: str, rating: int, m
             },
         )
     return True
+
+
+def post_feedback_reply(feedback_id: str, sender_email: str, message: str) -> bool:
+    msg_clean = str(message or "").strip()
+    if not msg_clean:
+        return False
+    admin_flag = 1 if is_admin_user(sender_email) else 0
+    now_iso = get_local_now().isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO feedback_replies (id, feedback_id, sender_email, is_admin, message, created_at)
+                VALUES (:id, :fid, :se, :ia, :msg, :ca)
+            """),
+            {
+                "id": str(uuid.uuid4()),
+                "fid": feedback_id,
+                "se": sender_email,
+                "ia": admin_flag,
+                "msg": msg_clean,
+                "ca": now_iso,
+            },
+        )
+        if admin_flag:
+            conn.execute(
+                text("UPDATE feedback SET is_read_user = 0, is_read_admin = 1 WHERE id = :fid"),
+                {"fid": feedback_id},
+            )
+        else:
+            conn.execute(
+                text("UPDATE feedback SET is_read_admin = 0, is_read_user = 1 WHERE id = :fid"),
+                {"fid": feedback_id},
+            )
+    return True
+
+
+def get_unread_feedback_count(user_id: str, email: str) -> int:
+    try:
+        with engine.connect() as conn:
+            if is_admin_user(email):
+                res = conn.execute(text("SELECT COUNT(*) FROM feedback WHERE COALESCE(is_read_admin, 0) = 0")).scalar()
+            else:
+                res = conn.execute(
+                    text("SELECT COUNT(*) FROM feedback WHERE user_id = :uid AND COALESCE(is_read_user, 1) = 0"),
+                    {"uid": user_id},
+                ).scalar()
+            return int(res or 0)
+    except Exception:
+        return 0
+
+
+def get_feedback_threads(user_id: str, email: str) -> List[Dict[str, Any]]:
+    try:
+        with engine.connect() as conn:
+            if is_admin_user(email):
+                fb_rows = conn.execute(text("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 60")).mappings().all()
+            else:
+                fb_rows = conn.execute(
+                    text("SELECT * FROM feedback WHERE user_id = :uid ORDER BY created_at DESC LIMIT 30"),
+                    {"uid": user_id},
+                ).mappings().all()
+
+            rep_rows = conn.execute(text("SELECT * FROM feedback_replies ORDER BY created_at ASC")).mappings().all()
+
+        replies_by_fb: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rep_rows:
+            fid = str(r["feedback_id"])
+            replies_by_fb.setdefault(fid, []).append(dict(r))
+
+        threads = []
+        for fb in fb_rows:
+            d = dict(fb)
+            d["replies"] = replies_by_fb.get(str(d["id"]), [])
+            threads.append(d)
+        return threads
+    except Exception:
+        return []
+
+
+def mark_feedback_threads_read(user_id: str, email: str, feedback_id: Optional[str] = None) -> None:
+    try:
+        with engine.begin() as conn:
+            if is_admin_user(email):
+                if feedback_id:
+                    conn.execute(text("UPDATE feedback SET is_read_admin = 1 WHERE id = :fid"), {"fid": feedback_id})
+                else:
+                    conn.execute(text("UPDATE feedback SET is_read_admin = 1"))
+            else:
+                if feedback_id:
+                    conn.execute(text("UPDATE feedback SET is_read_user = 1 WHERE id = :fid AND user_id = :uid"), {"fid": feedback_id, "uid": user_id})
+                else:
+                    conn.execute(text("UPDATE feedback SET is_read_user = 1 WHERE user_id = :uid"), {"uid": user_id})
+    except Exception:
+        pass
 
 
 # -----------------------
@@ -2301,9 +2771,45 @@ def show_theme_dialog(user_id: str):
             safe_rerun("app")
 
 
+@dialog_decorator("🎉 New Feature Now in Public Release!")
+def show_public_release_dialog(user_id: str, newly_released_keys: List[str]):
+    st.caption("A feature you may have seen in Beta testing has officially graduated to full Public Release!")
+    for fk in newly_released_keys:
+        meta = FEATURE_REGISTRY.get(fk, {})
+        st.markdown(
+            f"<div class='update-card'>"
+            f"<div style='margin-bottom:5px;'><span class='update-ver-badge'>PUBLIC RELEASE</span> <b>{meta.get('name', fk)}</b></div>"
+            f"<div style='font-size:0.84rem; line-height:1.45;'>{meta.get('release_summary', 'This feature is now officially live and ready for everyday use!')}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    if st.button("Awesome, Got It!", key="dismiss_public_release_btn", use_container_width=True):
+        seen_rel = list(get_seen_releases_cached(user_id))
+        seen_rel.extend(newly_released_keys)
+        _write_seen_releases(user_id, seen_rel)
+        safe_rerun("app")
+
+
 @dialog_decorator(f"Welcome to Assignment Tracker v{CURRENT_APP_VERSION}")
-def show_updates_dialog(user_id: str, is_first_time: bool = False):
-    st.caption("What's new, recent changelog history, and quick tips to get the most out of your tracker.")
+def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
+    st.caption("What's new, active Beta features, changelog history, and quick tips.")
+
+    statuses = get_global_feature_statuses()
+    active_betas = [
+        (fk, FEATURE_REGISTRY[fk])
+        for fk, st_val in statuses.items()
+        if st_val == "beta" and fk in FEATURE_REGISTRY
+    ]
+
+    if active_betas and not is_admin_user(email):
+        for fk, meta in active_betas:
+            st.markdown(
+                f"<div class='beta-banner-box'>"
+                f"<div style='margin-bottom:4px;'><span class='update-beta-badge'>BETA UPDATE</span> <b>{meta['name']}</b></div>"
+                f"<div style='font-size:0.82rem; line-height:1.4;'>{meta.get('beta_summary', '')} <i>(Find it in: {meta.get('location_hint', 'the app')})</i></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
     tab_latest, tab_prev, tab_tips = st.tabs(["✨ Latest Updates", "📜 Previous Updates", "💡 Things to Know"])
 
@@ -2311,9 +2817,9 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.6 NEW</span> <b>Smart Classroom Sync & Duplicate Detection</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.8 NEW</span> <b>Classroom Instruction Fetch, Smart Stability Guard & Two-Way Feedback</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Click <b>Sync</b> in the top bar to grab your Classroom bookmarklet. Automatically maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, filters out reworded duplicates, and routes club forms into <b>Other</b>.
+                    The Classroom bookmarklet now pulls teacher instructions into task notes, maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, remembers deleted synced tasks, and lets you view replies to your feedback!
                 </div>
             </div>
             <div class='update-card'>
@@ -2362,7 +2868,7 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
             """
             <div class='tip-card'>
                 <b>1. 1-Click Classroom Bookmarklet:</b><br/>
-                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-imports your tasks.
+                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-imports your tasks and instructions.
             </div>
             <div class='tip-card'>
                 <b>2. Personalize Your SHS Bell Schedule:</b><br/>
@@ -2381,25 +2887,144 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         safe_rerun("app")
 
 
-@dialog_decorator("💬 Send Feedback")
-def show_feedback_dialog(user_id: str, email: str):
-    st.caption("Spot a bug, have an idea for a new feature, or want to share how the tracker is working for you?")
-    with st.form("student_feedback_form"):
-        category = st.selectbox(
-            "Feedback Category",
-            ["Feature Request", "Bug Report", "SHS Bell Schedule Issue", "General Feedback"],
-            key="fb_category_sel",
-        )
-        rating = st.slider("Overall Rating (1 = Needs Work, 5 = Love It)", min_value=1, max_value=5, value=5, key="fb_rating_slider")
-        message = st.text_area("Your Message", placeholder="Tell us what you think or describe any issue...", height=120, key="fb_message_txt")
-        if st.form_submit_button("Submit Feedback", use_container_width=True):
-            if not message.strip():
-                st.error("Please enter a short message before submitting.")
-            else:
-                if submit_user_feedback(user_id, email, category, rating, message):
-                    st.success("Thank you! Your feedback has been saved.")
+@dialog_decorator("💬 Feedback & Messages")
+def show_feedback_dialog(user_id: str, email: str, prefill_cat: str = ""):
+    st.caption("Send bug reports, Beta feature feedback, or ideas—and view direct replies from the creator.")
+    tab_send, tab_msgs = st.tabs(["✍️ Send New Feedback", "📬 My Threads & Replies"])
+
+    with tab_send:
+        cat_opts = ["Beta Feature Issue", "Bug Report", "Feature Request", "SHS Bell Schedule Issue", "General Feedback"]
+        default_idx = 0 if prefill_cat else 2
+        with st.form("student_feedback_form"):
+            category = st.selectbox("Feedback Category", cat_opts, index=default_idx, key="fb_category_sel")
+            rating = st.slider("Overall Rating (1 = Needs Work, 5 = Love It)", min_value=1, max_value=5, value=5, key="fb_rating_slider")
+            default_msg = f"[{prefill_cat}] " if prefill_cat else ""
+            message = st.text_area("Your Message", value=default_msg, placeholder="Tell me what happened or share your idea...", height=120, key="fb_message_txt")
+            if st.form_submit_button("Submit Feedback", use_container_width=True):
+                if not message.strip():
+                    st.error("Please enter a short message before submitting.")
                 else:
-                    st.error("Unable to submit feedback right now.")
+                    if submit_user_feedback(user_id, email, category, rating, message):
+                        st.success("Thank you! Your feedback was sent. Check 'My Threads & Replies' for responses.")
+                    else:
+                        st.error("Unable to submit feedback right now.")
+
+    with tab_msgs:
+        mark_feedback_threads_read(user_id, email)
+        threads = get_feedback_threads(user_id, email)
+        if not threads:
+            st.info("You haven't sent any feedback messages yet.")
+        else:
+            for th in threads:
+                fid = str(th["id"])
+                ts_short = str(th.get("created_at", ""))[:16].replace("T", " ")
+                with st.expander(f"{th.get('category')} ({'⭐' * int(th.get('rating') or 5)}) — {ts_short}", expanded=True):
+                    st.markdown(
+                        f"<div class='msg-bubble-user'><b>You</b> <span class='slot-meta-text'>({ts_short})</span><br/>{th.get('message')}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    for rep in th.get("replies", []):
+                        r_ts = str(rep.get("created_at", ""))[:16].replace("T", " ")
+                        if int(rep.get("is_admin") or 0) == 1:
+                            st.markdown(
+                                f"<div class='msg-bubble-admin'><b>Creator Reply</b> <span class='slot-meta-text'>({r_ts})</span><br/>{rep.get('message')}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f"<div class='msg-bubble-user'><b>You</b> <span class='slot-meta-text'>({r_ts})</span><br/>{rep.get('message')}</div>",
+                                unsafe_allow_html=True,
+                            )
+                    with st.form(f"user_reply_form_{fid}", clear_on_submit=True):
+                        u_rep_txt = st.text_input("Follow-up message", placeholder="Write a follow-up...", key=f"u_rep_in_{fid}", label_visibility="collapsed")
+                        if st.form_submit_button("Send Follow-Up", use_container_width=True):
+                            if u_rep_txt.strip():
+                                post_feedback_reply(fid, email, u_rep_txt.strip())
+                                safe_rerun("app")
+
+
+@dialog_decorator("📬 Admin Feedback Inbox & System Health")
+def show_admin_feedback_inbox_dialog(user_id: str, email: str):
+    if not is_admin_user(email):
+        st.error("Admin access only.")
+        return
+
+    tab_inbox, tab_health = st.tabs(["💬 User Feedback & Messages", "🛡️ Feature Health & Fallbacks"])
+
+    with tab_inbox:
+        c_filt, c_mark = st.columns([2, 1.3])
+        with c_filt:
+            unread_only = st.checkbox("Show Unread Threads Only", value=False, key="admin_inbox_unread_chk")
+        with c_mark:
+            if st.button("Mark All Read", key="admin_mark_all_read_btn", use_container_width=True):
+                mark_feedback_threads_read(user_id, email)
+                safe_rerun("app")
+
+        threads = get_feedback_threads(user_id, email)
+        if unread_only:
+            threads = [t for t in threads if int(t.get("is_read_admin") or 0) == 0]
+
+        if not threads:
+            st.info("No feedback messages in this view.")
+        else:
+            for th in threads:
+                fid = str(th["id"])
+                is_unread = (int(th.get("is_read_admin") or 0) == 0)
+                badge = "🔴 NEW • " if is_unread else ""
+                sender = th.get("email", "Unknown")
+                ts_short = str(th.get("created_at", ""))[:16].replace("T", " ")
+                with st.expander(f"{badge}{sender} — {th.get('category')} ({'⭐' * int(th.get('rating') or 5)}) • {ts_short}", expanded=is_unread):
+                    st.markdown(
+                        f"<div class='msg-bubble-user'><b>{sender}</b> <span class='slot-meta-text'>({ts_short})</span><br/>{th.get('message')}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    for rep in th.get("replies", []):
+                        r_ts = str(rep.get("created_at", ""))[:16].replace("T", " ")
+                        if int(rep.get("is_admin") or 0) == 1:
+                            st.markdown(
+                                f"<div class='msg-bubble-admin'><b>You (Admin)</b> <span class='slot-meta-text'>({r_ts})</span><br/>{rep.get('message')}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f"<div class='msg-bubble-user'><b>{rep.get('sender_email')}</b> <span class='slot-meta-text'>({r_ts})</span><br/>{rep.get('message')}</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    with st.form(f"admin_reply_form_{fid}", clear_on_submit=True):
+                        rep_txt = st.text_input("Reply to student", placeholder=f"Message {sender}...", key=f"adm_rep_in_{fid}", label_visibility="collapsed")
+                        rc1, rc2 = st.columns([2.2, 1])
+                        with rc1:
+                            if st.form_submit_button("Send Reply", use_container_width=True):
+                                if rep_txt.strip():
+                                    post_feedback_reply(fid, email, rep_txt.strip())
+                                    safe_rerun("app")
+                        with rc2:
+                            if is_unread and st.form_submit_button("Mark Read", use_container_width=True):
+                                mark_feedback_threads_read(user_id, email, feedback_id=fid)
+                                safe_rerun("app")
+
+    with tab_health:
+        st.caption("Automatic fallback status and error alerts across all Beta and live features.")
+        errs = get_unresolved_feature_errors()
+        if not errs:
+            st.success("✅ All features healthy — zero fallback triggers reported.")
+        else:
+            for er in errs:
+                eid = str(er["id"])
+                st.markdown(
+                    f"<div class='crash-alert-box'>"
+                    f"<div style='font-weight:800; font-size:0.86rem;'>🚨 {er.get('feature_name')} ({er.get('feature_key')})</div>"
+                    f"<div style='font-size:0.80rem; margin-top:3px;'><b>Error:</b> {er.get('error_msg')}</div>"
+                    f"<div class='slot-meta-text'>Triggered by {er.get('user_email')} at {str(er.get('created_at'))[:16].replace('T', ' ')}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                if er.get("traceback_txt"):
+                    st.code(er["traceback_txt"], language="text")
+                if st.button("✅ Mark Resolved", key=f"res_err_modal_{eid}"):
+                    resolve_feature_error(eid)
+                    safe_rerun("app")
 
 
 @dialog_decorator("Welcome! Setup Your Classes")
@@ -2553,7 +3178,7 @@ def show_manage_courses_dialog(user_id: str):
 
 
 # -----------------------
-# Google Classroom Bookmarklet & Paste Sync Engine
+# Google Classroom Bookmarklet & Paste Sync Engine (With Beta & Fallback Guard)
 # -----------------------
 def _detect_live_app_url(saved_url: str = "") -> str:
     clean_saved = str(saved_url or "").strip().rstrip("/")
@@ -2710,6 +3335,7 @@ def _decode_classroom_sync_payload(sync_b64: str) -> List[Dict[str, str]]:
                     "title": str(item.get("t", "")).strip(),
                     "raw_course": str(item.get("c", "")).strip(),
                     "raw_due": str(item.get("d", "")).strip(),
+                    "details": str(item.get("n", "")).strip(),
                 })
         return out
     except Exception:
@@ -2746,7 +3372,7 @@ def _parse_classroom_pasted_text(raw_text: str) -> List[Dict[str, str]]:
         if i + 2 < len(lines) and date_line_re.match(lines[i + 2]):
             d_cand = lines[i + 2]
             step = 3
-        items.append({"title": t_cand, "raw_course": c_cand, "raw_due": d_cand})
+        items.append({"title": t_cand, "raw_course": c_cand, "raw_due": d_cand, "details": ""})
         i += step
     return items
 
@@ -2758,15 +3384,27 @@ def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
         "javascript:(function(){try{"
         "if(!location.hostname.includes('classroom.google.com')){"
         "location.href='https://classroom.google.com/a/not-turned-in/all';return;}"
-        "var items=[],seen={},skip=/^(assignment|quiz|description|more_vert|event|expand_more|expand_less)$/i;"
+        "var rows=[],seen={},skip=/^(assignment|quiz|description|more_vert|event|expand_more|expand_less)$/i;"
         "document.querySelectorAll('a[href*=\"/c/\"][href*=\"/a/\"],a[href*=\"/c/\"][href*=\"/sa/\"]').forEach(function(a){"
         "var row=a.closest('li,[role=\"listitem\"]')||a;"
         "var lines=(row.innerText||a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
         "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
-        "if(!seen[k]&&t.length>1){seen[k]=1;items.push({t:t,c:c,d:d});}}});"
-        "if(!items.length){alert('Open your Google Classroom To-do list first, then click Sync to Tracker again!');return;}"
+        "if(!seen[k]&&t.length>1){seen[k]=1;rows.push({t:t,c:c,d:d,href:a.href});}}});"
+        "if(!rows.length){alert('Open your Google Classroom To-do list first, then click Sync to Tracker again!');return;}"
+        "Promise.all(rows.map(function(it){"
+        "return fetch(it.href,{credentials:'include'}).then(function(r){return r.text();}).then(function(html){"
+        "var desc='',idx=html.indexOf(JSON.stringify(it.t));"
+        "if(idx>-1){var chunk=html.slice(idx+it.t.length+2,idx+2500),es=chunk.indexOf('</script>');"
+        "if(es>-1)chunk=chunk.slice(0,es);"
+        "var strs=chunk.match(/\"((?:\\\\.|[^\"\\\\]){8,500})\"/g)||[];"
+        "for(var i=0;i<strs.length;i++){try{var v=JSON.parse(strs[i]).replace(/<[^>]+>/g,' ').replace(/\\s+/g,' ').trim();"
+        "if(v&&v!==it.t&&v!==it.c&&!/^https?:\\/\\//i.test(v)&&!/^(drive|docs|forms|classroom|google)/i.test(v)&&/\\s/.test(v)){desc=v.slice(0,220);break;}}catch(e){}}}"
+        "return {t:it.t,c:it.c,d:it.d,n:desc};"
+        "}).catch(function(){return {t:it.t,c:it.c,d:it.d,n:''};});"
+        "})).then(function(items){"
         "var payload=btoa(unescape(encodeURIComponent(JSON.stringify(items))));"
         f"location.href='{clean_url}/?sync='+encodeURIComponent(payload)+'{auto_suffix}';"
+        "});"
         "}catch(e){alert('Bookmarklet error: '+e.message);}})();"
     )
 
@@ -2784,51 +3422,106 @@ def _get_existing_task_signatures(df_existing: pd.DataFrame) -> List[Dict[str, s
     return sigs
 
 
-def process_auto_classroom_sync(user_id: str, incoming_items: List[Dict[str, str]]) -> str:
-    if not incoming_items:
-        return ""
+def _format_synced_note(details: str, raw_course: str) -> str:
+    d_clean = str(details or "").strip()
+    c_clean = str(raw_course or "").strip()
+    if d_clean and c_clean:
+        return f"{d_clean} (Classroom: {c_clean})"
+    if d_clean:
+        return d_clean
+    return f"Synced from Google Classroom ({c_clean})".strip()
+
+
+def process_auto_classroom_sync(user_id: str, email: str, incoming_items: List[Dict[str, str]]) -> str:
+    def _primary():
+        if not incoming_items:
+            return ""
+        user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+        existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
+        ignored_set = set(get_ignored_sync_cached(user_id))
+
+        to_add: List[Dict[str, Any]] = []
+        skipped_dups = 0
+        for item in incoming_items:
+            t_clean = str(item.get("title", "")).strip()
+            if not t_clean:
+                continue
+            if t_clean.lower() in ignored_set:
+                skipped_dups += 1
+                continue
+            mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+            parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
+            if _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs):
+                skipped_dups += 1
+                continue
+            details_txt = str(item.get("details", "")).strip()
+            existing_sigs.append({"title": t_clean, "course": mapped_c, "due_date": parsed_due})
+            to_add.append({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "title": t_clean,
+                "course": mapped_c,
+                "due_date": parsed_due,
+                "status": "Not Started",
+                "priority": priority_to_int("Medium"),
+                "atype": _infer_classroom_atype(f"{t_clean} {details_txt}"),
+                "eta": "",
+                "notes": _format_synced_note(details_txt, item.get("raw_course", "")),
+                "created_at": get_local_now().isoformat(),
+                "prev_status": "Not Started",
+            })
+
+        if to_add:
+            upsert_assignments(to_add)
+            dup_note = f" ({skipped_dups} skipped)" if skipped_dups else ""
+            return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{dup_note}"
+        return f"✅ Google Classroom checked — all {skipped_dups} assignment{'s are' if skipped_dups != 1 else ' is'} already in your tracker!"
+
+    def _fallback():
+        return "⚠️ Classroom auto-sync switched to manual backup mode. Open Sync → Quick Paste Backup to import."
+
+    return run_with_fallback("classroom_sync_v2", _primary, _fallback, email)
+
+
+def _render_classroom_sync_v1_fallback(user_id: str):
+    """Previous working Quick-Paste sync fallback if new Classroom Sync v2 ever throws an error."""
     user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-    existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
-
-    to_add: List[Dict[str, Any]] = []
-    skipped_dups = 0
-    for item in incoming_items:
-        t_clean = str(item.get("title", "")).strip()
-        if not t_clean:
-            continue
-        mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
-        parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-        if _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs):
-            skipped_dups += 1
-            continue
-        existing_sigs.append({"title": t_clean, "course": mapped_c, "due_date": parsed_due})
-        to_add.append({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "title": t_clean,
-            "course": mapped_c,
-            "due_date": parsed_due,
-            "status": "Not Started",
-            "priority": priority_to_int("Medium"),
-            "atype": _infer_classroom_atype(t_clean),
-            "eta": "",
-            "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})".strip(),
-            "created_at": get_local_now().isoformat(),
-            "prev_status": "Not Started",
-        })
-
-    if to_add:
-        upsert_assignments(to_add)
-        dup_note = f" ({skipped_dups} duplicate{'s' if skipped_dups != 1 else ''} skipped)" if skipped_dups else ""
-        return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{dup_note}"
-    return f"✅ Google Classroom checked — all {skipped_dups} assignment{'s are' if skipped_dups != 1 else ' is'} already in your tracker!"
+    st.caption("Open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
+    pasted_blob = st.text_area("Paste Classroom To-do Page Text Here", height=150, key="classroom_paste_fallback_area")
+    if st.button("Import Pasted Assignments", key="parse_pasted_fallback_btn", use_container_width=True):
+        parsed_items = _parse_classroom_pasted_text(pasted_blob)
+        if not parsed_items:
+            st.error("Could not detect assignments from that text.")
+        else:
+            to_add = []
+            for item in parsed_items:
+                mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+                parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
+                to_add.append({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "title": item["title"],
+                    "course": mapped_c,
+                    "due_date": parsed_due,
+                    "status": "Not Started",
+                    "priority": priority_to_int("Medium"),
+                    "atype": _infer_classroom_atype(item["title"]),
+                    "eta": "",
+                    "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})",
+                    "created_at": get_local_now().isoformat(),
+                    "prev_status": "Not Started",
+                })
+            upsert_assignments(to_add)
+            safe_rerun("app")
 
 
-@dialog_decorator("📥 Sync Google Classroom")
-def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
+def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str):
+    render_feature_stage_header("classroom_sync_v2", user_id, email)
+
     shs_cfg = get_shs_cached(user_id)
     user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
     existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
+    ignored_set = set(get_ignored_sync_cached(user_id))
 
     incoming_items = st.session_state.get("_classroom_sync_preview", [])
 
@@ -2839,15 +3532,17 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
 
         for idx, item in enumerate(incoming_items):
             t_clean = item["title"]
+            details_txt = str(item.get("details", "")).strip()
             mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
             parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-            inferred_type = _infer_classroom_atype(t_clean)
-            is_dup = _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs)
+            inferred_type = _infer_classroom_atype(f"{t_clean} {details_txt}")
+            is_dup = (t_clean.lower() in ignored_set) or _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs)
 
             due_lbl = f"Due {parsed_due}" if parsed_due else "No due date"
-            dup_lbl = " (Already in tracker)" if is_dup else ""
+            dup_lbl = " (Already in tracker / dismissed)" if is_dup else ""
+            detail_preview = f" — \"{details_txt[:70]}...\"" if len(details_txt) > 70 else (f" — \"{details_txt}\"" if details_txt else "")
             checked = st.checkbox(
-                f"{t_clean} — [{mapped_c} • {inferred_type} • {due_lbl}]{dup_lbl}",
+                f"{t_clean} [{mapped_c} • {inferred_type} • {due_lbl}]{detail_preview}{dup_lbl}",
                 value=(not is_dup),
                 key=f"sync_chk_{idx}",
             )
@@ -2862,7 +3557,7 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
                     "priority": priority_to_int(default_prio),
                     "atype": inferred_type,
                     "eta": "",
-                    "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})".strip(),
+                    "notes": _format_synced_note(details_txt, item.get("raw_course", "")),
                     "created_at": get_local_now().isoformat(),
                     "prev_status": "Not Started",
                 })
@@ -2883,7 +3578,7 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
     tab_bm, tab_paste = st.tabs(["⚡ 1-Click Bookmarklet Setup", "📋 Quick Paste Backup"])
 
     with tab_bm:
-        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom scans your To-do list and auto-imports your assignments immediately.")
+        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom scans your To-do list, fetches assignment instructions, and auto-imports your tasks.")
         detected_url = _detect_live_app_url(shs_cfg.get("app_url", ""))
         app_url_input = st.text_input(
             "1. Your Streamlit App URL (auto-detected)",
@@ -2914,6 +3609,10 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
             4. Click **`Sync to Tracker`** from any website to jump to Classroom To-do, then click **`Sync to Tracker`** again to import!
             """
         )
+        if ignored_set:
+            if st.button(f"Reset {len(ignored_set)} Dismissed Classroom Item(s)", key="reset_ignored_sync_btn"):
+                _write_ignored_sync(user_id, [])
+                st.success("Dismissed Classroom items cleared!")
 
     with tab_paste:
         st.caption("If your school Chromebook blocks bookmarklets, open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
@@ -2925,6 +3624,16 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
             else:
                 st.session_state["_classroom_sync_preview"] = parsed_items
                 safe_rerun("app")
+
+
+@dialog_decorator("📥 Sync Google Classroom")
+def show_classroom_sync_dialog(user_id: str, email: str, user_prio_mode: str):
+    run_with_fallback(
+        "classroom_sync_v2",
+        lambda: _render_classroom_sync_v2_body(user_id, email, user_prio_mode),
+        lambda: _render_classroom_sync_v1_fallback(user_id),
+        email,
+    )
 
 
 # -----------------------
@@ -2992,7 +3701,7 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                         unsafe_allow_html=True,
                     )
                     if notes:
-                        note_preview = notes if len(notes) <= 90 else notes[:87] + "..."
+                        note_preview = notes if len(notes) <= 180 else notes[:177] + "..."
                         st.markdown(f"<div class='card-note-text'>Note: {note_preview}</div>", unsafe_allow_html=True)
 
 
@@ -3385,12 +4094,13 @@ if not user:
 
 user_id = str(user.get("id"))
 email = str(user.get("email", "User"))
+admin_mode = is_admin_user(email)
 
 hydrate_user_session(user_id)
 
 auto_sync_items = st.session_state.pop("_classroom_auto_sync", None)
 if auto_sync_items:
-    st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, auto_sync_items)
+    st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, email, auto_sync_items)
 
 user_theme = get_theme_cached(user_id)
 is_light_theme = (user_theme.get("mode") == "Light")
@@ -3398,24 +4108,46 @@ st.markdown(build_theme_css(user_theme), unsafe_allow_html=True)
 
 active_prio_mode = get_prio_cached(user_id)
 seen_updates_ver = get_seen_updates_cached(user_id)
+seen_releases_list = get_seen_releases_cached(user_id)
 user_prio_mode = active_prio_mode or "Low / Medium / High"
 
+# Detect any Beta features that have been promoted to Public Release and not yet announced to this user
+feature_statuses = get_global_feature_statuses()
+newly_released_keys = [
+    fk for fk, st_val in feature_statuses.items()
+    if st_val == "released" and fk in FEATURE_REGISTRY and fk not in seen_releases_list
+]
+if admin_mode and newly_released_keys:
+    # Admin promoted it themselves; silently mark seen
+    _write_seen_releases(user_id, seen_releases_list + newly_released_keys)
+    newly_released_keys = []
+
 pending_edit_aid = st.session_state.pop("_pending_edit_aid", None)
+pending_fb_prefill = st.session_state.pop("_open_feedback_prefill", None)
+
 if pending_edit_aid:
     show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
+elif pending_fb_prefill is not None:
+    show_feedback_dialog(user_id, email, prefill_cat=pending_fb_prefill)
 elif st.session_state.get("_classroom_sync_preview"):
-    show_classroom_sync_dialog(user_id, user_prio_mode)
+    show_classroom_sync_dialog(user_id, email, user_prio_mode)
+elif newly_released_keys:
+    show_public_release_dialog(user_id, newly_released_keys)
 elif seen_updates_ver != CURRENT_APP_VERSION:
-    show_updates_dialog(user_id, is_first_time=True)
+    show_updates_dialog(user_id, email, is_first_time=True)
 elif not get_courses_cached(user_id):
     show_welcome_courses_dialog(user_id)
 elif not active_prio_mode:
     show_prio_config_dialog(user_id)
 
+unread_msg_count = get_unread_feedback_count(user_id, email)
+sync_has_beta = is_feature_in_beta("classroom_sync_v2") and not admin_mode
+
 logo_fill = "#0f172a" if is_light_theme else "#ffffff"
 col_header_left, col_header_right = st.columns([1.8, 3.2])
 
 with col_header_left:
+    admin_tag = " &bull; <span class='accent-text'>Creator Mode</span>" if admin_mode else ""
     st.markdown(
         f"""
         <div class='header-brand-box'>
@@ -3427,20 +4159,21 @@ with col_header_left:
                 </svg>
                 <span class='app-title' style='line-height:1;'>Assignment Tracker</span>
             </div>
-            <div class='app-subtitle'>{email} &bull; <span class='accent-text'>System: {user_prio_mode}</span></div>
+            <div class='app-subtitle'>{email} &bull; <span class='accent-text'>System: {user_prio_mode}</span>{admin_tag}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 with col_header_right:
-    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns([0.95, 0.85, 0.95, 0.95, 0.85, 0.95, 0.95, 0.95])
+    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns([0.92, 0.92, 0.92, 0.92, 0.85, 0.92, 1.05, 0.92])
     with b1:
         if st.button("+ Task", key="toolbar_add", use_container_width=True):
             show_add_assignment_dialog(user_id, user_prio_mode)
     with b2:
-        if st.button("Sync", key="toolbar_sync", use_container_width=True):
-            show_classroom_sync_dialog(user_id, user_prio_mode)
+        sync_label = "Sync 🧪" if sync_has_beta else "Sync"
+        if st.button(sync_label, key="toolbar_sync", use_container_width=True):
+            show_classroom_sync_dialog(user_id, email, user_prio_mode)
     with b3:
         if st.button("Courses", key="toolbar_courses", use_container_width=True):
             show_manage_courses_dialog(user_id)
@@ -3452,13 +4185,38 @@ with col_header_right:
             show_theme_dialog(user_id)
     with b6:
         if st.button("Updates", key="toolbar_updates", use_container_width=True):
-            show_updates_dialog(user_id, is_first_time=False)
+            show_updates_dialog(user_id, email, is_first_time=False)
     with b7:
-        if st.button("Feedback", key="toolbar_feedback", use_container_width=True):
-            show_feedback_dialog(user_id, email)
+        if admin_mode:
+            inbox_lbl = f"Inbox ({unread_msg_count})" if unread_msg_count > 0 else "Inbox"
+            if st.button(inbox_lbl, key="toolbar_admin_inbox", use_container_width=True):
+                show_admin_feedback_inbox_dialog(user_id, email)
+        else:
+            fb_lbl = f"Feedback ({unread_msg_count})" if unread_msg_count > 0 else "Feedback"
+            if st.button(fb_lbl, key="toolbar_feedback", use_container_width=True):
+                show_feedback_dialog(user_id, email)
     with b8:
         if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
             sign_out_user()
+
+# Admin-only broken-feature fallback alert banner
+if admin_mode:
+    unresolved_errors = get_unresolved_feature_errors()
+    for err_row in unresolved_errors[:2]:
+        e_id = str(err_row["id"])
+        ec1, ec2 = st.columns([4.5, 1.1])
+        with ec1:
+            st.markdown(
+                f"<div class='crash-alert-box'>"
+                f"<b>🚨 Fallback Triggered — {err_row.get('feature_name')}:</b> <code>{err_row.get('error_msg')}</code> "
+                f"<span class='slot-meta-text'>(User: {err_row.get('user_email')} • Open Inbox → Feature Health for full traceback)</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with ec2:
+            if st.button("Dismiss Alert", key=f"top_dismiss_err_{e_id}", use_container_width=True):
+                resolve_feature_error(e_id)
+                safe_rerun("app")
 
 sync_banner_msg = st.session_state.pop("_sync_banner_msg", None)
 if sync_banner_msg:
@@ -3472,33 +4230,31 @@ shs_letter_today = shs_today_info.get("letter", "")
 shs_sched_today = shs_today_info.get("schedule", "Daily")
 
 if shs_letter_today in ("A", "B", "C", "D", "X"):
-    shs_pill_html = f"<span class='shs-day-pill'>SHS {shs_letter_today} Day &bull; {shs_sched_today}</span>"
+    shs_pill_html = f"<span class='shs-day-pill'>SHS: {shs_letter_today} Day ({shs_sched_today})</span>"
 elif shs_letter_today == "NO SCHOOL":
-    shs_pill_html = f"<span class='shs-day-pill'>No School ({shs_today_info.get('note', 'Holiday')})</span>"
+    shs_pill_html = f"<span class='shs-day-pill'>SHS: No School ({shs_today_info.get('note', 'Holiday')})</span>"
 else:
-    shs_pill_html = "<span class='shs-day-pill'>Weekend</span>"
+    shs_pill_html = "<span class='shs-day-pill'>SHS: Weekend</span>"
 
-st.markdown(f'<div class="date-banner">Today\'s Date: {today_str} {shs_pill_html}</div>', unsafe_allow_html=True)
+st.markdown(f"<div class='date-banner'>Today's Date: {today_str}{shs_pill_html}</div>", unsafe_allow_html=True)
 
-NAV_OPTIONS = [
-    "Assignments",
-    "Tests & Quizzes",
-    "Other",
-    "SHS Bell Schedule",
-    "Weekly Schedule & AI Planner",
-    "Completed & Recovery",
-]
-active_tab = st.radio("Navigation", NAV_OPTIONS, horizontal=True, label_visibility="collapsed", key="main_nav_pill")
+active_tab = st.radio(
+    "Navigation",
+    ["Assignments", "Tests & Quizzes", "Other", "Schedule & AI Planner", "SHS Bell Schedule", "Completed & Recovery"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_nav_radio",
+)
 
 if active_tab == "Assignments":
-    render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light=is_light_theme, key_prefix="reg_")
+    render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light_theme, "reg_")
 elif active_tab == "Tests & Quizzes":
-    render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light=is_light_theme, key_prefix="tests_")
+    render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light_theme, "tst_")
 elif active_tab == "Other":
-    render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light=is_light_theme, key_prefix="other_")
+    render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light_theme, "oth_")
+elif active_tab == "Schedule & AI Planner":
+    render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light_theme)
 elif active_tab == "SHS Bell Schedule":
-    render_shs_bell_schedule_fragment(user_id, is_light=is_light_theme)
-elif active_tab == "Weekly Schedule & AI Planner":
-    render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light=is_light_theme)
+    render_shs_bell_schedule_fragment(user_id, is_light_theme)
 elif active_tab == "Completed & Recovery":
-    render_completed_recovery_fragment(user_id, is_light=is_light_theme)
+    render_completed_recovery_fragment(user_id, is_light_theme)
