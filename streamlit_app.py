@@ -210,7 +210,6 @@ def duplicate(title,course,due,df):
     same=(df.course.fillna("").str.upper()==course.upper()) & ((df.due_date.fillna("")==due)|(df.due_date.fillna("")=="")|(due==""))
     words=set(re.findall(r"[a-z0-9]{4,}",title.lower()))
     return any(len(words & set(re.findall(r"[a-z0-9]{4,}",str(t).lower())))>=2 for t in df.loc[same,"title"])
-
 def parse_time(s):
     for fmt in ("%I:%M %p","%I:%M%p","%H:%M"):
         try: return datetime.strptime(str(s).strip().upper(),fmt).time()
@@ -328,7 +327,6 @@ def render_bell(uid):
         remain=f" · {((b.hour*60+b.minute)-(now.hour*60+now.minute))} min remaining" if live else ""
         st.markdown(f"{'🟢 **LIVE —** ' if live else ''}**Period {r['period']} · {esc(r['class'])}** — {r['start']}–{r['end']} · {r['wave']}{extra}{remain}")
 
-
 def render_admin():
     st.header("🛠️ Feature Control Center & Feedback Inbox")
     with db_engine().connect() as conn:
@@ -340,7 +338,7 @@ def render_admin():
     st.metric("Unread replies",unread); st.subheader("Feature catalog and release controls")
     if catalog:
         for item in catalog:
-            old=next((x["status"] for x in flags if x["feature"]==item["feature"]),"Beta Testing")
+            old=next((x["status"] for x in flags if x["feature"]==item["feature"]), "Beta Testing")
             col1,col2=st.columns([3,2]); col1.write(f"**{item['feature']}** — {item['description']}")
             with col2:
                 choice=st.selectbox(item["feature"],["Public Released","Beta Testing","Removed/Hidden"],index=["Public Released","Beta Testing","Removed/Hidden"].index(old),key="flag_"+item["feature"])
