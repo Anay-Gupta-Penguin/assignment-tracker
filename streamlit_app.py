@@ -33,7 +33,7 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.5"
+CURRENT_APP_VERSION = "3.6"
 
 
 def get_local_now() -> datetime:
@@ -378,10 +378,20 @@ div[data-testid="stRadio"] > div[role="radiogroup"] > label {
 }
 div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child,
 div[data-testid="stRadio"] > div[role="radiogroup"] > label > span:first-child,
+div[data-testid="stRadio"] label > div:has(input[type="radio"]),
+div[data-testid="stRadio"] div[data-baseweb="radio"] > div:first-child,
 div[data-testid="stRadio"] input[type="radio"] {
+    appearance: none !important;
+    -moz-appearance: none !important;
+    -webkit-appearance: none !important;
     display: none !important;
+    opacity: 0 !important;
     width: 0 !important;
     height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    position: absolute !important;
+    pointer-events: none !important;
 }
 div[data-testid="stRadio"] > div[role="radiogroup"] > label p {
     color: var(--text-secondary) !important;
@@ -1390,7 +1400,7 @@ def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
             bg, fg, border = "#ffe4e6", "#881337", "#f43f5e"
         elif any(k in c for k in ["HIST", "CIV", "GOV", "SOC", "APUSH"]):
             bg, fg, border = "#fef3c7", "#78350f", "#f59e0b"
-        elif any(k in c for k in ["SPAN", "FRENCH", "LANG", "LATIN"]):
+        elif any(k in c for k in ["SPAN", "ESP", "FRENCH", "LANG", "LATIN"]):
             bg, fg, border = "#f3e8ff", "#581c87", "#a855f7"
         elif c in ("OTHER", "STUDY HALL", "FREE / UNASSIGNED", "CONNECT") or c.startswith("PERIOD "):
             bg, fg, border = "#e2e8f0", "#1e293b", "#64748b"
@@ -1405,7 +1415,7 @@ def get_course_badge_html(course_name: str, is_light: bool = False) -> str:
             bg, fg, border = "#881337", "#fda4af", "#e11d48"
         elif any(k in c for k in ["HIST", "CIV", "GOV", "SOC", "APUSH"]):
             bg, fg, border = "#78350f", "#fcd34d", "#d97706"
-        elif any(k in c for k in ["SPAN", "FRENCH", "LANG", "LATIN"]):
+        elif any(k in c for k in ["SPAN", "ESP", "FRENCH", "LANG", "LATIN"]):
             bg, fg, border = "#581c87", "#e9d5ff", "#9333ea"
         elif c in ("OTHER", "STUDY HALL", "FREE / UNASSIGNED", "CONNECT") or c.startswith("PERIOD "):
             bg, fg, border = "#1e293b", "#e2e8f0", "#475569"
@@ -2301,9 +2311,9 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.5 NEW</span> <b>1-Click Google Classroom Sync Bookmarklet</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.6 NEW</span> <b>Smart Classroom Sync & Duplicate Detection</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Click <b>Sync</b> in the top bar to grab your Chrome bookmarklet. Clicking it on your Google Classroom To-do list scans all assignments, matches your classes, skips duplicates, and auto-imports them in one click.
+                    Click <b>Sync</b> in the top bar to grab your Classroom bookmarklet. Automatically maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, filters out reworded duplicates, and routes club forms into <b>Other</b>.
                 </div>
             </div>
             <div class='update-card'>
@@ -2352,7 +2362,7 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
             """
             <div class='tip-card'>
                 <b>1. 1-Click Classroom Bookmarklet:</b><br/>
-                Save the bookmarklet from the <b>Sync</b> button to your Chrome bookmarks bar. Clicking it from any tab opens Classroom To-do; clicking it on Classroom auto-imports your tasks.
+                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-imports your tasks.
             </div>
             <div class='tip-card'>
                 <b>2. Personalize Your SHS Bell Schedule:</b><br/>
@@ -2565,10 +2575,12 @@ def _infer_classroom_atype(title: str) -> str:
     t = str(title or "").lower()
     if any(k in t for k in ["test", "quiz", "exam", "midterm", "final", "assessment"]):
         return "Test & Quizzes"
-    if any(k in t for k in ["essay", "paper", "dbq", "frq", "research", "rough draft", "final draft"]):
+    if re.search(r"\b(essay|research paper|term paper|dbq|frq|rough draft|final draft)\b", t):
         return "Essay"
-    if any(k in t for k in ["presentation", "slides", "slideshow", "poster", "project", "speech"]):
+    if any(k in t for k in ["presentation", "slides", "slideshow", "poster", "speech"]):
         return "Presentation"
+    if any(k in t for k in ["volunteer", "sponsorship", "permission", "syllabus", "sign up", "form"]):
+        return "Other"
     return "Homework"
 
 
@@ -2586,6 +2598,8 @@ def _match_classroom_course(raw_course: str, user_courses: List[str]) -> str:
         "SCIENCE": ["BIOLOGY", "CHEMISTRY", "PHYSICS", "ENVIRONMENTAL", "ANATOMY", "SCIENCE"],
         "ENGLISH": ["ENGLISH", "LITERATURE", "WRITING", "LANG", "COMPOSITION", "HUMANITIES"],
         "HISTORY": ["HISTORY", "WORLD", "APUSH", "GOVERNMENT", "CIVICS", "ECONOMICS", "PSYCHOLOGY"],
+        "SPANISH": ["ESPAÑOL", "ESPANOL", "SPANISH"],
+        "FRENCH": ["FRANÇAIS", "FRANCAIS", "FRENCH"],
     }
     for user_c in user_courses:
         u_up = user_c.strip().upper()
@@ -2594,6 +2608,53 @@ def _match_classroom_course(raw_course: str, user_courses: List[str]) -> str:
                 return u_up
     cleaned = re.split(r"[-–—|•(]", rc_up)[0].strip()
     return cleaned[:24] if cleaned else "GENERAL"
+
+
+def _title_tokens(title: str) -> List[str]:
+    stopwords = {
+        "the", "a", "an", "of", "for", "to", "in", "on", "and", "all",
+        "before", "class", "take", "paper", "complete", "finish", "do",
+    }
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", str(title or "").lower().replace("&", " and "))
+    tokens: List[str] = []
+    for w in cleaned.split():
+        if w in stopwords:
+            continue
+        if len(w) > 3 and w.endswith("s"):
+            w = w[:-1]
+        tokens.append(w)
+    return tokens
+
+
+def _is_duplicate_task(
+    new_title: str,
+    new_course: str,
+    new_due: str,
+    existing_records: List[Dict[str, str]],
+) -> bool:
+    nt_low = new_title.strip().lower()
+    if not nt_low:
+        return True
+    new_toks = _title_tokens(new_title)
+    for rec in existing_records:
+        ex_title = rec.get("title", "").strip()
+        if ex_title.lower() == nt_low:
+            return True
+        same_course = (rec.get("course", "").upper() == new_course.upper())
+        ex_due = rec.get("due_date", "")
+        same_or_open_due = (not ex_due or not new_due or ex_due == new_due)
+        if same_course and same_or_open_due and new_toks:
+            ex_toks = _title_tokens(ex_title)
+            if not ex_toks:
+                continue
+            matches = 0
+            for t1 in new_toks:
+                if any(t1 == t2 or (len(t1) >= 4 and len(t2) >= 4 and (t1.startswith(t2) or t2.startswith(t1))) for t2 in ex_toks):
+                    matches += 1
+            min_len = min(len(new_toks), len(ex_toks))
+            if matches >= 2 and (matches / max(1, min_len)) >= 0.6:
+                return True
+    return False
 
 
 def _parse_classroom_due_date(raw_due: str) -> str:
@@ -2694,34 +2755,40 @@ def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
     clean_url = str(app_url or "").strip().rstrip("/") or "https://YOUR-APP.streamlit.app"
     auto_suffix = "&auto=1" if auto_import else ""
     return (
-        "javascript:(function(){"
+        "javascript:(function(){try{"
         "if(!location.hostname.includes('classroom.google.com')){"
         "location.href='https://classroom.google.com/a/not-turned-in/all';return;}"
-        "var items=[],seen={},skip=/^(assignment|quiz|description|more_vert|event)$/i;"
+        "var items=[],seen={},skip=/^(assignment|quiz|description|more_vert|event|expand_more|expand_less)$/i;"
         "document.querySelectorAll('a[href*=\"/c/\"][href*=\"/a/\"],a[href*=\"/c/\"][href*=\"/sa/\"]').forEach(function(a){"
         "var row=a.closest('li,[role=\"listitem\"]')||a;"
         "var lines=(row.innerText||a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
         "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
         "if(!seen[k]&&t.length>1){seen[k]=1;items.push({t:t,c:c,d:d});}}});"
-        "if(!items.length){document.querySelectorAll('[role=\"listitem\"]').forEach(function(li){"
-        "var lines=(li.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
-        "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
-        "if(!seen[k]&&t.length>1&&t.length<140){seen[k]=1;items.push({t:t,c:c,d:d});}}});}"
-        "if(!items.length){alert('No assignments found here. Open your Google Classroom To-do list first, then click this bookmark again!');return;}"
+        "if(!items.length){alert('Open your Google Classroom To-do list first, then click Sync to Tracker again!');return;}"
         "var payload=btoa(unescape(encodeURIComponent(JSON.stringify(items))));"
         f"location.href='{clean_url}/?sync='+encodeURIComponent(payload)+'{auto_suffix}';"
-        "})();"
+        "}catch(e){alert('Bookmarklet error: '+e.message);}})();"
     )
+
+
+def _get_existing_task_signatures(df_existing: pd.DataFrame) -> List[Dict[str, str]]:
+    if df_existing.empty:
+        return []
+    sigs: List[Dict[str, str]] = []
+    for _, r in df_existing.iterrows():
+        sigs.append({
+            "title": str(r.get("title") or ""),
+            "course": str(r.get("course") or "").upper(),
+            "due_date": str(r.get("due_date") or ""),
+        })
+    return sigs
 
 
 def process_auto_classroom_sync(user_id: str, incoming_items: List[Dict[str, str]]) -> str:
     if not incoming_items:
         return ""
     user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-    df_existing = get_assignments_cached(user_id)
-    existing_titles = set(
-        df_existing["title"].astype(str).str.strip().str.lower().tolist()
-    ) if not df_existing.empty else set()
+    existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
 
     to_add: List[Dict[str, Any]] = []
     skipped_dups = 0
@@ -2729,16 +2796,18 @@ def process_auto_classroom_sync(user_id: str, incoming_items: List[Dict[str, str
         t_clean = str(item.get("title", "")).strip()
         if not t_clean:
             continue
-        if t_clean.lower() in existing_titles:
+        mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+        parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
+        if _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs):
             skipped_dups += 1
             continue
-        existing_titles.add(t_clean.lower())
+        existing_sigs.append({"title": t_clean, "course": mapped_c, "due_date": parsed_due})
         to_add.append({
             "id": str(uuid.uuid4()),
             "user_id": user_id,
             "title": t_clean,
-            "course": _match_classroom_course(item.get("raw_course", ""), user_courses),
-            "due_date": _parse_classroom_due_date(item.get("raw_due", "")),
+            "course": mapped_c,
+            "due_date": parsed_due,
             "status": "Not Started",
             "priority": priority_to_int("Medium"),
             "atype": _infer_classroom_atype(t_clean),
@@ -2759,10 +2828,7 @@ def process_auto_classroom_sync(user_id: str, incoming_items: List[Dict[str, str
 def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
     shs_cfg = get_shs_cached(user_id)
     user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-    df_existing = get_assignments_cached(user_id)
-    existing_titles = set(
-        df_existing["title"].astype(str).str.strip().str.lower().tolist()
-    ) if not df_existing.empty else set()
+    existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
 
     incoming_items = st.session_state.get("_classroom_sync_preview", [])
 
@@ -2776,7 +2842,7 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
             mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
             parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
             inferred_type = _infer_classroom_atype(t_clean)
-            is_dup = (t_clean.lower() in existing_titles)
+            is_dup = _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs)
 
             due_lbl = f"Due {parsed_due}" if parsed_due else "No due date"
             dup_lbl = " (Already in tracker)" if is_dup else ""
@@ -2817,7 +2883,7 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
     tab_bm, tab_paste = st.tabs(["⚡ 1-Click Bookmarklet Setup", "📋 Quick Paste Backup"])
 
     with tab_bm:
-        st.caption("Save this bookmarklet once to your Chrome bookmarks bar. Clicking it on Google Classroom scans your To-do list and auto-imports your assignments immediately.")
+        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom scans your To-do list and auto-imports your assignments immediately.")
         detected_url = _detect_live_app_url(shs_cfg.get("app_url", ""))
         app_url_input = st.text_input(
             "1. Your Streamlit App URL (auto-detected)",
@@ -2842,10 +2908,10 @@ def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
         st.markdown(
             """
             **3. How to use it:**
-            1. In Chrome, press **Ctrl+Shift+B** (or **Cmd+Shift+B** on Mac) to show your bookmarks bar.
-            2. Right-click the bookmarks bar → **Add page...**
+            1. Press **Ctrl+Shift+B** (or **Cmd+Shift+B** on Mac) to show your bookmarks bar.
+            2. Right-click the bookmarks bar → **Add page...** (or **Add Bookmark...** in Firefox).
             3. Name it **`Sync to Tracker`** and paste the code above into the **URL** box.
-            4. Click **`Sync to Tracker`** from any tab to jump to Classroom To-do, then click **`Sync to Tracker`** again to import!
+            4. Click **`Sync to Tracker`** from any website to jump to Classroom To-do, then click **`Sync to Tracker`** again to import!
             """
         )
 
