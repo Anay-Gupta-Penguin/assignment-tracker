@@ -60,11 +60,23 @@ CONFIG_PREFIX = {
     "__SYSTEM_IGNORED_SYNC__": "user_ignored_sync_config",
 }
 
-DEFAULT_FEATURE_CATALOG: Dict[str, str] = {
-    "ai_study_planner": "7-day multi-session smart study planner with daily caps & commitment blocking",
-    "shs_bell_schedule": "Live Simsbury High School bell schedule with A/B/C/D/X rotations & L1/L2/L3 lunches",
-    "classroom_sync_v2": "Chromebook Ctrl+A Paste Sync & personal device Google Classroom bookmarklet",
-    "theme_studio": "Dark/Light contrast modes, presets, gradients & compressed photo backgrounds",
+DEFAULT_FEATURE_CATALOG: Dict[str, Tuple[str, str]] = {
+    "ai_study_planner": (
+        "AI Study Planner",
+        "7-day multi-session smart study planner with daily caps & commitment blocking",
+    ),
+    "shs_bell_schedule": (
+        "SHS Bell Schedule",
+        "Live Simsbury High School bell schedule with A/B/C/D/X rotations & L1/L2/L3 lunches",
+    ),
+    "classroom_sync_v2": (
+        "Google Classroom Sync",
+        "Chromebook Ctrl+A Paste Sync & personal device Google Classroom bookmarklet",
+    ),
+    "theme_studio": (
+        "Theme & Appearance Studio",
+        "Dark/Light contrast modes, presets, gradients & compressed photo backgrounds",
+    ),
 }
 
 THEME_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -224,7 +236,7 @@ def is_admin(email: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Database Engine, Initialization & Async Background Writer
+# Database Engine, Auto-Schema Migration & Async Background Writer
 # ---------------------------------------------------------------------------
 def _db_url() -> str:
     sec = st.secrets
@@ -252,7 +264,19 @@ def db_lock() -> threading.Lock:
     return threading.Lock()
 
 
-def init_db() -> None:
+def _table_cols(conn, table_name: str) -> set[str]:
+    rows = conn.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :t"
+        ),
+        {"t": table_name},
+    ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+@st.cache_resource
+def init_db() -> Dict[str, Any]:
     ddl = [
         "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS assignments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT, course TEXT, due_date TEXT, status TEXT, priority INTEGER, atype TEXT, eta TEXT, notes TEXT, created_at TEXT)",
@@ -265,23 +289,64 @@ def init_db() -> None:
     with db_engine().begin() as conn:
         for q in ddl:
             conn.execute(text(q))
-        for fk, desc in DEFAULT_FEATURE_CATALOG.items():
+
+        fc_cols = _table_cols(conn, "feature_catalog")
+        ff_cols = _table_cols(conn, "feature_flags")
+        fe_cols = _table_cols(conn, "feature_errors")
+        fr_cols = _table_cols(conn, "feedback_replies")
+
+        fc_pk = "feature_key" if "feature_key" in fc_cols else ("key" if "key" in fc_cols else "feature")
+        ff_pk = "feature_key" if "feature_key" in ff_cols else ("key" if "key" in ff_cols else "feature")
+
+        conn.execute(text("ALTER TABLE feature_catalog ADD COLUMN IF NOT EXISTS description TEXT"))
+        conn.execute(text("ALTER TABLE feature_flags ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Public Released'"))
+        conn.execute(text("ALTER TABLE feature_errors ADD COLUMN IF NOT EXISTS feature TEXT"))
+        conn.execute(text("ALTER TABLE feature_errors ADD COLUMN IF NOT EXISTS message TEXT"))
+        conn.execute(text("ALTER TABLE feature_errors ADD COLUMN IF NOT EXISTS created_at TEXT"))
+        conn.execute(text("ALTER TABLE feature_errors ADD COLUMN IF NOT EXISTS resolved INTEGER DEFAULT 0"))
+        conn.execute(text("ALTER TABLE feedback_replies ADD COLUMN IF NOT EXISTS is_read INTEGER DEFAULT 0"))
+
+        fc_cols = _table_cols(conn, "feature_catalog")
+        fe_cols = _table_cols(conn, "feature_errors")
+        fr_cols = _table_cols(conn, "feedback_replies")
+
+        for fk, (fname, desc) in DEFAULT_FEATURE_CATALOG.items():
+            if "name" in fc_cols:
+                conn.execute(
+                    text(
+                        f"INSERT INTO feature_catalog ({fc_pk}, name, description) "
+                        f"VALUES (:f, :n, :d) ON CONFLICT ({fc_pk}) DO NOTHING"
+                    ),
+                    {"f": fk, "n": fname, "d": desc},
+                )
+            else:
+                conn.execute(
+                    text(
+                        f"INSERT INTO feature_catalog ({fc_pk}, description) "
+                        f"VALUES (:f, :d) ON CONFLICT ({fc_pk}) DO NOTHING"
+                    ),
+                    {"f": fk, "d": desc},
+                )
+
             conn.execute(
                 text(
-                    "INSERT INTO feature_catalog (feature, description) VALUES (:f, :d) ON CONFLICT (feature) DO NOTHING"
-                ),
-                {"f": fk, "d": desc},
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO feature_flags (feature, status) VALUES (:f, 'Public Released') ON CONFLICT (feature) DO NOTHING"
+                    f"INSERT INTO feature_flags ({ff_pk}, status) "
+                    f"VALUES (:f, 'Public Released') ON CONFLICT ({ff_pk}) DO NOTHING"
                 ),
                 {"f": fk},
             )
 
+    return {
+        "fc_pk": fc_pk,
+        "ff_pk": ff_pk,
+        "fc_has_name": "name" in fc_cols,
+        "fe_has_legacy": ("feature_name" in fe_cols and "error_msg" in fe_cols),
+        "fr_has_is_admin": "is_admin" in fr_cols,
+    }
+
 
 try:
-    init_db()
+    SCHEMA_INFO = init_db()
 except Exception as exc:
     st.error(f"Database connection error: {exc}")
     st.stop()
@@ -330,15 +395,16 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     if not force and st.session_state.get("_hydrated_uid") == user_id:
         return
 
+    ff_pk = SCHEMA_INFO["ff_pk"]
     with db_engine().connect() as conn:
         rows = (
             conn.execute(text("SELECT * FROM assignments WHERE user_id = :uid"), {"uid": user_id})
             .mappings()
             .all()
         )
-        flag_rows = conn.execute(text("SELECT feature, status FROM feature_flags")).mappings().all()
+        flag_rows = conn.execute(text(f"SELECT {ff_pk} AS fk, status FROM feature_flags")).mappings().all()
 
-    st.session_state.feature_flags_map = {str(r["feature"]): str(r["status"]) for r in flag_rows}
+    st.session_state.feature_flags_map = {str(r["fk"]): str(r["status"]) for r in flag_rows}
 
     today = now_local().date().isoformat()
     cfg: Dict[str, str] = {}
@@ -519,7 +585,8 @@ def get_feature_state(feature_key: str) -> str:
 def is_feature_visible(feature_key: str, email: str) -> bool:
     if is_admin(email):
         return True
-    return get_feature_state(feature_key) != "Removed/Hidden"
+    st_val = get_feature_state(feature_key)
+    return st_val not in ("Removed/Hidden", "disabled")
 
 
 def run_with_fallback(feature: str, fn: Callable, fallback: Callable):
@@ -527,15 +594,20 @@ def run_with_fallback(feature: str, fn: Callable, fallback: Callable):
         return fn()
     except Exception as exc:
         try:
-            bg_sql(
-                "INSERT INTO feature_errors (id, feature, message, created_at, resolved) VALUES (:id, :f, :m, :c, 0)",
-                {
-                    "id": str(uuid.uuid4()),
-                    "f": feature,
-                    "m": str(exc)[:2000],
-                    "c": now_local().isoformat(),
-                },
-            )
+            eid = str(uuid.uuid4())
+            msg_str = str(exc)[:2000]
+            ts = now_local().isoformat()
+            if SCHEMA_INFO.get("fe_has_legacy"):
+                bg_sql(
+                    "INSERT INTO feature_errors (id, feature, message, feature_name, error_msg, created_at, resolved) "
+                    "VALUES (:id, :f, :m, :f, :m, :c, 0)",
+                    {"id": eid, "f": feature, "m": msg_str, "c": ts},
+                )
+            else:
+                bg_sql(
+                    "INSERT INTO feature_errors (id, feature, message, created_at, resolved) VALUES (:id, :f, :m, :c, 0)",
+                    {"id": eid, "f": feature, "m": msg_str, "c": ts},
+                )
         except Exception:
             pass
         st.warning(f"{feature} encountered an issue. Running in backup mode.")
@@ -1059,6 +1131,7 @@ def build_study_plan(
             work_queue.append(
                 {
                     "id": str(r["id"]),
+                    "task_id": str(r["id"]),
                     "title": str(r["title"]),
                     "course": str(r["course"]),
                     "due": due,
@@ -1668,7 +1741,7 @@ def show_feedback_dialog(uid: str, email: str) -> None:
         replies = (
             conn.execute(
                 text(
-                    "SELECT id, feedback_id, sender_email, message, created_at, is_read FROM feedback_replies "
+                    "SELECT id, feedback_id, sender_email, message, created_at, COALESCE(is_read, 0) AS is_read FROM feedback_replies "
                     "WHERE feedback_id IN (SELECT id FROM feedback WHERE user_id = :uid) ORDER BY created_at ASC"
                 ),
                 {"uid": uid},
@@ -1700,16 +1773,26 @@ def show_feedback_dialog(uid: str, email: str) -> None:
 
 @dialog_decorator("🛠️ Creator Admin Panel — Feature Control Center")
 def show_admin_dialog() -> None:
+    fc_pk = SCHEMA_INFO["fc_pk"]
+    ff_pk = SCHEMA_INFO["ff_pk"]
+
     with db_engine().connect() as conn:
-        errors = (
-            conn.execute(
-                text("SELECT id, feature, message, created_at FROM feature_errors WHERE resolved = 0 ORDER BY created_at DESC LIMIT 30")
+        if SCHEMA_INFO.get("fe_has_legacy"):
+            err_sql = (
+                "SELECT id, COALESCE(feature, feature_name, 'Feature') AS feature, "
+                "COALESCE(message, error_msg, '') AS message, created_at "
+                "FROM feature_errors WHERE COALESCE(resolved, 0) = 0 ORDER BY created_at DESC LIMIT 30"
             )
-            .mappings()
-            .all()
-        )
-        flags = conn.execute(text("SELECT feature, status FROM feature_flags")).mappings().all()
-        catalog = conn.execute(text("SELECT feature, description FROM feature_catalog ORDER BY feature")).mappings().all()
+        else:
+            err_sql = (
+                "SELECT id, feature, message, created_at FROM feature_errors "
+                "WHERE COALESCE(resolved, 0) = 0 ORDER BY created_at DESC LIMIT 30"
+            )
+        errors = conn.execute(text(err_sql)).mappings().all()
+        flags = conn.execute(text(f"SELECT {ff_pk} AS fk, status FROM feature_flags")).mappings().all()
+        catalog = conn.execute(
+            text(f"SELECT {fc_pk} AS fk, COALESCE(description, '') AS description FROM feature_catalog ORDER BY {fc_pk}")
+        ).mappings().all()
         fb_items = (
             conn.execute(
                 text("SELECT id, email, category, rating, message, created_at FROM feedback ORDER BY created_at DESC LIMIT 40")
@@ -1718,7 +1801,7 @@ def show_admin_dialog() -> None:
             .all()
         )
 
-    flag_map = {str(r["feature"]): str(r["status"]) for r in flags}
+    flag_map = {str(r["fk"]): str(r["status"]) for r in flags}
 
     if errors:
         st.subheader(f"🚨 Unresolved Fallback Alerts ({len(errors)})")
@@ -1732,10 +1815,20 @@ def show_admin_dialog() -> None:
     st.subheader("🎛️ Feature Release Toggles")
     state_opts = ["Public Released", "Beta Testing", "Removed/Hidden"]
     for item in catalog:
-        fk = str(item["feature"])
+        fk = str(item["fk"])
         cur_st = flag_map.get(fk, "Public Released")
+        if cur_st == "released":
+            cur_st = "Public Released"
+        elif cur_st == "beta":
+            cur_st = "Beta Testing"
+        elif cur_st == "disabled":
+            cur_st = "Removed/Hidden"
+
         c1, c2, c3 = st.columns([2.5, 1.6, 0.9])
-        c1.markdown(f"**{fk}**  \n<span style='font-size:0.78rem; opacity:0.75;'>{esc(item['description'])}</span>", unsafe_allow_html=True)
+        c1.markdown(
+            f"**{fk}**  \n<span style='font-size:0.78rem; opacity:0.75;'>{esc(item['description'])}</span>",
+            unsafe_allow_html=True,
+        )
         new_st = c2.selectbox(
             fk,
             state_opts,
@@ -1745,7 +1838,8 @@ def show_admin_dialog() -> None:
         )
         if c3.button("Save", key=f"adm_sav_{fk}", use_container_width=True):
             bg_sql(
-                "INSERT INTO feature_flags (feature, status) VALUES (:f, :s) ON CONFLICT (feature) DO UPDATE SET status = EXCLUDED.status",
+                f"INSERT INTO feature_flags ({ff_pk}, status) VALUES (:f, :s) "
+                f"ON CONFLICT ({ff_pk}) DO UPDATE SET status = EXCLUDED.status",
                 {"f": fk, "s": new_st},
             )
             st.session_state.feature_flags_map[fk] = new_st
@@ -1760,16 +1854,30 @@ def show_admin_dialog() -> None:
             st.write(fb["message"])
             rep_txt = st.text_input("Reply to student", key=f"adm_rep_in_{fid}")
             if st.button("Send Reply", key=f"adm_rep_btn_{fid}") and rep_txt.strip():
-                bg_sql(
-                    "INSERT INTO feedback_replies (id, feedback_id, sender_email, message, created_at, is_read) VALUES (:id, :fid, :em, :msg, :ca, 0)",
-                    {
-                        "id": str(uuid.uuid4()),
-                        "fid": fid,
-                        "em": ADMIN_EMAIL,
-                        "msg": rep_txt.strip(),
-                        "ca": now_local().isoformat(),
-                    },
-                )
+                if SCHEMA_INFO.get("fr_has_is_admin"):
+                    bg_sql(
+                        "INSERT INTO feedback_replies (id, feedback_id, sender_email, message, created_at, is_read, is_admin) "
+                        "VALUES (:id, :fid, :em, :msg, :ca, 0, 1)",
+                        {
+                            "id": str(uuid.uuid4()),
+                            "fid": fid,
+                            "em": ADMIN_EMAIL,
+                            "msg": rep_txt.strip(),
+                            "ca": now_local().isoformat(),
+                        },
+                    )
+                else:
+                    bg_sql(
+                        "INSERT INTO feedback_replies (id, feedback_id, sender_email, message, created_at, is_read) "
+                        "VALUES (:id, :fid, :em, :msg, :ca, 0)",
+                        {
+                            "id": str(uuid.uuid4()),
+                            "fid": fid,
+                            "em": ADMIN_EMAIL,
+                            "msg": rep_txt.strip(),
+                            "ca": now_local().isoformat(),
+                        },
+                    )
                 st.success("Reply sent!")
 
 
@@ -1780,7 +1888,6 @@ def render_assignments_tab(uid: str, email: str, prio_mode: str, light: bool) ->
     df = st.session_state.df_cached
     today_dt = now_local().date()
 
-    # Metric Summary Row
     total_active = int((df["status"] != "Done").sum()) if not df.empty else 0
     due_today_cnt = (
         int(((df["status"] != "Done") & (df["due_date"] == today_dt.isoformat())).sum()) if not df.empty else 0
@@ -1793,12 +1900,23 @@ def render_assignments_tab(uid: str, email: str, prio_mode: str, light: bool) ->
     done_cnt = int((df["status"] == "Done").sum()) if not df.empty else 0
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f"<div class='stat-chip'><div class='stat-num'>{total_active}</div><div class='stat-lbl'>Active Tasks</div></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='stat-chip'><div class='stat-num'>{due_today_cnt}</div><div class='stat-lbl'>Due Today</div></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='stat-chip'><div class='stat-num'>{overdue_cnt}</div><div class='stat-lbl'>Overdue</div></div>", unsafe_allow_html=True)
-    m4.markdown(f"<div class='stat-chip'><div class='stat-num'>{done_cnt}</div><div class='stat-lbl'>Completed</div></div>", unsafe_allow_html=True)
+    m1.markdown(
+        f"<div class='stat-chip'><div class='stat-num'>{total_active}</div><div class='stat-lbl'>Active Tasks</div></div>",
+        unsafe_allow_html=True,
+    )
+    m2.markdown(
+        f"<div class='stat-chip'><div class='stat-num'>{due_today_cnt}</div><div class='stat-lbl'>Due Today</div></div>",
+        unsafe_allow_html=True,
+    )
+    m3.markdown(
+        f"<div class='stat-chip'><div class='stat-num'>{overdue_cnt}</div><div class='stat-lbl'>Overdue</div></div>",
+        unsafe_allow_html=True,
+    )
+    m4.markdown(
+        f"<div class='stat-chip'><div class='stat-num'>{done_cnt}</div><div class='stat-lbl'>Completed</div></div>",
+        unsafe_allow_html=True,
+    )
 
-    # Action & Filter Toolbar
     c_add, c_search, c_course, c_status, c_sort = st.columns([1.05, 1.85, 1.15, 1.15, 1.05])
     if c_add.button("➕ Add Task", use_container_width=True, key="board_add_btn"):
         st.session_state["_open_modal"] = "add"
@@ -1850,7 +1968,6 @@ def render_assignments_tab(uid: str, email: str, prio_mode: str, light: bool) ->
     else:
         view = view.sort_values(["_s_done", "_s_due", "_s_prio"])
 
-    # 2-Column Responsive Card Grid
     col_l, col_r = st.columns(2)
     rows_list = [r for _, r in view.iterrows()]
     for idx, r in enumerate(rows_list):
@@ -1916,7 +2033,7 @@ def render_assignments_tab(uid: str, email: str, prio_mode: str, light: bool) ->
 
 
 def render_classroom_sync_tab(uid: str, email: str) -> None:
-    if get_feature_state("classroom_sync_v2") == "Beta Testing":
+    if get_feature_state("classroom_sync_v2") in ("Beta Testing", "beta"):
         st.markdown(
             "<div class='beta-banner'>🧪 <b>Beta Feature:</b> Chromebook Ctrl+A Paste Sync is active.</div>",
             unsafe_allow_html=True,
@@ -2037,7 +2154,7 @@ def render_classroom_sync_tab(uid: str, email: str) -> None:
 
 
 def render_planner_tab(uid: str, light: bool) -> None:
-    if get_feature_state("ai_study_planner") == "Beta Testing":
+    if get_feature_state("ai_study_planner") in ("Beta Testing", "beta"):
         st.markdown(
             "<div class='beta-banner'>🧪 <b>Beta Feature:</b> Multi-Session 7-Day Study Planner.</div>",
             unsafe_allow_html=True,
@@ -2146,7 +2263,7 @@ def render_planner_tab(uid: str, light: bool) -> None:
 
 @fragment_decorator(run_every=30)
 def render_bell_schedule_tab(uid: str, light: bool) -> None:
-    if get_feature_state("shs_bell_schedule") == "Beta Testing":
+    if get_feature_state("shs_bell_schedule") in ("Beta Testing", "beta"):
         st.markdown(
             "<div class='beta-banner'>🧪 <b>Beta Feature:</b> Live Simsbury High School Bell Schedule.</div>",
             unsafe_allow_html=True,
