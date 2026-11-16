@@ -264,15 +264,15 @@ def db_lock() -> threading.Lock:
     return threading.Lock()
 
 
-def _table_cols(conn, table_name: str) -> set[str]:
+def _table_col_info(conn, table_name: str) -> Dict[str, str]:
     rows = conn.execute(
         text(
-            "SELECT column_name FROM information_schema.columns "
+            "SELECT column_name, is_nullable FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = :t"
         ),
         {"t": table_name},
     ).fetchall()
-    return {str(r[0]) for r in rows}
+    return {str(r[0]): str(r[1]) for r in rows}
 
 
 @st.cache_resource
@@ -286,14 +286,23 @@ def init_db() -> Dict[str, Any]:
         "CREATE TABLE IF NOT EXISTS feature_flags (feature TEXT PRIMARY KEY, status TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS feature_catalog (feature TEXT PRIMARY KEY, description TEXT)",
     ]
+    protected_cols = {
+        "id", "user_id", "email", "password_hash", "created_at",
+        "category", "message", "feedback_id", "sender_email",
+        "feature", "feature_key", "key", "status",
+    }
     with db_engine().begin() as conn:
         for q in ddl:
             conn.execute(text(q))
 
-        fc_cols = _table_cols(conn, "feature_catalog")
-        ff_cols = _table_cols(conn, "feature_flags")
-        fe_cols = _table_cols(conn, "feature_errors")
-        fr_cols = _table_cols(conn, "feedback_replies")
+        for tbl in ("feature_flags", "feature_catalog", "feature_errors", "feedback", "feedback_replies"):
+            col_map = _table_col_info(conn, tbl)
+            for col_name, nullable in col_map.items():
+                if nullable == "NO" and col_name not in protected_cols:
+                    conn.execute(text(f'ALTER TABLE "{tbl}" ALTER COLUMN "{col_name}" DROP NOT NULL'))
+
+        fc_cols = set(_table_col_info(conn, "feature_catalog").keys())
+        ff_cols = set(_table_col_info(conn, "feature_flags").keys())
 
         fc_pk = "feature_key" if "feature_key" in fc_cols else ("key" if "key" in fc_cols else "feature")
         ff_pk = "feature_key" if "feature_key" in ff_cols else ("key" if "key" in ff_cols else "feature")
@@ -306,10 +315,12 @@ def init_db() -> Dict[str, Any]:
         conn.execute(text("ALTER TABLE feature_errors ADD COLUMN IF NOT EXISTS resolved INTEGER DEFAULT 0"))
         conn.execute(text("ALTER TABLE feedback_replies ADD COLUMN IF NOT EXISTS is_read INTEGER DEFAULT 0"))
 
-        fc_cols = _table_cols(conn, "feature_catalog")
-        fe_cols = _table_cols(conn, "feature_errors")
-        fr_cols = _table_cols(conn, "feedback_replies")
+        fc_cols = set(_table_col_info(conn, "feature_catalog").keys())
+        ff_cols = set(_table_col_info(conn, "feature_flags").keys())
+        fe_cols = set(_table_col_info(conn, "feature_errors").keys())
+        fr_cols = set(_table_col_info(conn, "feedback_replies").keys())
 
+        ts_now = now_local().isoformat()
         for fk, (fname, desc) in DEFAULT_FEATURE_CATALOG.items():
             if "name" in fc_cols:
                 conn.execute(
@@ -328,17 +339,27 @@ def init_db() -> Dict[str, Any]:
                     {"f": fk, "d": desc},
                 )
 
-            conn.execute(
-                text(
-                    f"INSERT INTO feature_flags ({ff_pk}, status) "
-                    f"VALUES (:f, 'Public Released') ON CONFLICT ({ff_pk}) DO NOTHING"
-                ),
-                {"f": fk},
-            )
+            if "updated_at" in ff_cols:
+                conn.execute(
+                    text(
+                        f"INSERT INTO feature_flags ({ff_pk}, status, updated_at) "
+                        f"VALUES (:f, 'Public Released', :ts) ON CONFLICT ({ff_pk}) DO NOTHING"
+                    ),
+                    {"f": fk, "ts": ts_now},
+                )
+            else:
+                conn.execute(
+                    text(
+                        f"INSERT INTO feature_flags ({ff_pk}, status) "
+                        f"VALUES (:f, 'Public Released') ON CONFLICT ({ff_pk}) DO NOTHING"
+                    ),
+                    {"f": fk},
+                )
 
     return {
         "fc_pk": fc_pk,
         "ff_pk": ff_pk,
+        "ff_has_updated_at": "updated_at" in ff_cols,
         "fc_has_name": "name" in fc_cols,
         "fe_has_legacy": ("feature_name" in fe_cols and "error_msg" in fe_cols),
         "fr_has_is_admin": "is_admin" in fr_cols,
@@ -927,8 +948,8 @@ def parse_date(raw: str) -> str:
 
     for fmt in ("%b %d", "%B %d", "%m/%d"):
         try:
-            dt_obj = datetime.strptime(s_no_wd, fmt)
-            cand = date(today.year, dt_obj.month, dt_obj.day)
+            dt_obj = datetime.strptime(f"{s_no_wd} {today.year}", f"{fmt} %Y")
+            cand = dt_obj.date()
             if (today - cand).days > 180:
                 cand = date(today.year + 1, dt_obj.month, dt_obj.day)
             return cand.isoformat()
@@ -1837,11 +1858,19 @@ def show_admin_dialog() -> None:
             key=f"adm_sel_{fk}",
         )
         if c3.button("Save", key=f"adm_sav_{fk}", use_container_width=True):
-            bg_sql(
-                f"INSERT INTO feature_flags ({ff_pk}, status) VALUES (:f, :s) "
-                f"ON CONFLICT ({ff_pk}) DO UPDATE SET status = EXCLUDED.status",
-                {"f": fk, "s": new_st},
-            )
+            ts_now = now_local().isoformat()
+            if SCHEMA_INFO.get("ff_has_updated_at"):
+                bg_sql(
+                    f"INSERT INTO feature_flags ({ff_pk}, status, updated_at) VALUES (:f, :s, :ts) "
+                    f"ON CONFLICT ({ff_pk}) DO UPDATE SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at",
+                    {"f": fk, "s": new_st, "ts": ts_now},
+                )
+            else:
+                bg_sql(
+                    f"INSERT INTO feature_flags ({ff_pk}, status) VALUES (:f, :s) "
+                    f"ON CONFLICT ({ff_pk}) DO UPDATE SET status = EXCLUDED.status",
+                    {"f": fk, "s": new_st},
+                )
             st.session_state.feature_flags_map[fk] = new_st
             rerun()
 
