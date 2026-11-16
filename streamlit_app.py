@@ -34,7 +34,7 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.8"
+CURRENT_APP_VERSION = "3.9"
 ADMIN_EMAILS = {"30guptaa@simsburyschools.net"}
 
 
@@ -44,19 +44,15 @@ def is_admin_user(email: str) -> bool:
 
 # -----------------------
 # Central Beta & Feature Release Registry
-# Add any future feature here with "default_status": "beta" to automatically get:
-# - Regular-user Beta alerts & top-of-feature Beta testing banner
-# - Admin-only "Promote to Public Release" button (no redeploy needed)
-# - Automatic Public Release popup alert for all users when promoted
 # -----------------------
 FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "classroom_sync_v2": {
-        "name": "Google Classroom Instruction & Auto-Sync",
-        "version": "3.8",
+        "name": "Google Classroom Auto-Expand & Full To-Do Sync",
+        "version": "3.9",
         "default_status": "beta",
         "location_hint": "Sync button in the top toolbar",
-        "beta_summary": "Fetches teacher instructions directly from Classroom posts and remembers dismissed synced tasks.",
-        "release_summary": "Google Classroom Instruction & Auto-Sync is now officially live! Classroom imports now pull teacher instructions into task notes and remember dismissed items.",
+        "beta_summary": "Auto-expands collapsed To-do sections (No due date, This week, Later), imports forms/materials/clubs into Other, and fetches instructions.",
+        "release_summary": "Google Classroom Full To-Do Sync is now officially live! It auto-expands all To-do sections, handles club posts, and pulls instructions into notes.",
     },
 }
 
@@ -1629,11 +1625,6 @@ def run_with_fallback(
     fallback_fn: Callable[[], Any],
     user_email: str,
 ) -> Any:
-    """
-    Executes new/beta feature code inside a crash-proof boundary.
-    If anything raises an exception, it logs the error for the admin and seamlessly
-    renders fallback_fn() so the dashboard never goes down.
-    """
     try:
         return primary_fn()
     except Exception as exc:
@@ -1646,12 +1637,6 @@ def run_with_fallback(
 
 
 def render_feature_stage_header(feature_key: str, user_id: str, email: str) -> None:
-    """
-    Renders the top bar for any feature registered in FEATURE_REGISTRY:
-    - Regular users: Shows a Beta testing banner ONLY while status == 'beta'.
-    - Admin (30guptaa@simsburyschools.net): Never sees the user Beta warning; sees
-      the Admin Beta Workbench with a 'Promote to Public Release' button (and fallback test).
-    """
     meta = FEATURE_REGISTRY.get(feature_key)
     if not meta:
         return
@@ -2817,21 +2802,21 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.8 NEW</span> <b>Classroom Instruction Fetch, Smart Stability Guard & Two-Way Feedback</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.9 NEW</span> <b>Auto-Expand Full Classroom To-Do & Club Routing</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    The Classroom bookmarklet now pulls teacher instructions into task notes, maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, remembers deleted synced tasks, and lets you view replies to your feedback!
+                    The Classroom bookmarklet now automatically expands collapsed sections (<i>No due date</i>, <i>This week</i>, <i>Next week</i>, <i>Later</i>), imports forms/materials/club announcements into the <b>Other</b> tab, and fixes dates on <i>Posted</i> and <i>Sunday, Dec 6</i> items. <b>Re-copy the bookmarklet once from Sync!</b>
+                </div>
+            </div>
+            <div class='update-card'>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.8</span> <b>Classroom Instruction Fetch, Smart Stability Guard & Two-Way Feedback</b></div>
+                <div style='font-size:0.83rem; line-height:1.45;'>
+                    Pulls teacher instructions into task notes, maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, and lets you view replies to your feedback!
                 </div>
             </div>
             <div class='update-card'>
                 <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.4</span> <b>Live SHS Bell Schedule & Spreadsheet Sync</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
                     Auto-detects A/B/C/D/X days, Connect Wednesdays, delays, and early dismissals with live class countdowns, per-day lunch waves (L1/L2/L3), Study Hall rooms, and optional Google Sheet calendar sync.
-                </div>
-            </div>
-            <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.2</span> <b>Theme Studio & Eye-Friendly Light Mode</b></div>
-                <div style='font-size:0.83rem; line-height:1.45;'>
-                    Customize Dark or low-glare Light modes, 10 color presets, custom solid colors, multi-stop gradients, and custom photo backgrounds from the <b>Theme</b> button.
                 </div>
             </div>
             """,
@@ -2841,6 +2826,12 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
     with tab_prev:
         st.markdown(
             """
+            <div class='update-card'>
+                <div style='margin-bottom:4px;'><span class='update-old-badge'>v3.2</span> <b>Theme Studio & Eye-Friendly Light Mode</b></div>
+                <div style='font-size:0.81rem; line-height:1.4;'>
+                    Customize Dark or low-glare Light modes, 10 color presets, custom solid colors, multi-stop gradients, and custom photo backgrounds.
+                </div>
+            </div>
             <div class='update-card'>
                 <div style='margin-bottom:4px;'><span class='update-old-badge'>v3.0</span> <b>Zero-Latency @st.fragment Engine</b></div>
                 <div style='font-size:0.81rem; line-height:1.4;'>
@@ -2853,12 +2844,6 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
                     Automatic daily time-slot scheduling around recurring commitments, per-day study caps, and 15-second Undo toasts.
                 </div>
             </div>
-            <div class='update-card'>
-                <div style='margin-bottom:4px;'><span class='update-old-badge'>v2.0</span> <b>Completed & Recovery Center</b></div>
-                <div style='font-size:0.81rem; line-height:1.4;'>
-                    Restore accidentally checked-off assignments or daily study slots, with automatic cleanup of past-due finished work.
-                </div>
-            </div>
             """,
             unsafe_allow_html=True,
         )
@@ -2868,7 +2853,7 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
             """
             <div class='tip-card'>
                 <b>1. 1-Click Classroom Bookmarklet:</b><br/>
-                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-imports your tasks and instructions.
+                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-expands all sections and imports everything.
             </div>
             <div class='tip-card'>
                 <b>2. Personalize Your SHS Bell Schedule:</b><br/>
@@ -3178,8 +3163,16 @@ def show_manage_courses_dialog(user_id: str):
 
 
 # -----------------------
-# Google Classroom Bookmarklet & Paste Sync Engine (With Beta & Fallback Guard)
+# Google Classroom Bookmarklet & Paste Sync Engine (v3.9 Full To-Do)
 # -----------------------
+CLUB_ACTIVITY_KEYWORDS = [
+    "club", "league", "robotics", "deca", "counseling", "market", "trojan",
+    "aviation", "council", "nhs", "national honor", "band", "choir",
+    "orchestra", "athletics", "team", "class of 20", "announcements",
+    "neml", "connect", "koski",
+]
+
+
 def _detect_live_app_url(saved_url: str = "") -> str:
     clean_saved = str(saved_url or "").strip().rstrip("/")
     if clean_saved:
@@ -3196,7 +3189,21 @@ def _detect_live_app_url(saved_url: str = "") -> str:
     return ""
 
 
-def _infer_classroom_atype(title: str) -> str:
+def _is_club_or_activity(raw_course: str, user_courses: List[str]) -> bool:
+    rc_low = str(raw_course or "").strip().lower()
+    if not rc_low:
+        return False
+    # If the user explicitly created a course matching it, treat it as a class
+    for c in user_courses:
+        c_low = c.strip().lower()
+        if c_low and c_low != "other" and c_low == rc_low:
+            return False
+    return any(kw in rc_low for kw in CLUB_ACTIVITY_KEYWORDS)
+
+
+def _infer_classroom_atype(title: str, raw_course: str = "", user_courses: Optional[List[str]] = None) -> str:
+    if _is_club_or_activity(raw_course, user_courses or []):
+        return "Other"
     t = str(title or "").lower()
     if any(k in t for k in ["test", "quiz", "exam", "midterm", "final", "assessment"]):
         return "Test & Quizzes"
@@ -3204,7 +3211,7 @@ def _infer_classroom_atype(title: str) -> str:
         return "Essay"
     if any(k in t for k in ["presentation", "slides", "slideshow", "poster", "speech"]):
         return "Presentation"
-    if any(k in t for k in ["volunteer", "sponsorship", "permission", "syllabus", "sign up", "form"]):
+    if any(k in t for k in ["volunteer", "sponsorship", "permission", "syllabus", "sign up", "registration", "bake sale"]):
         return "Other"
     return "Homework"
 
@@ -3214,6 +3221,12 @@ def _match_classroom_course(raw_course: str, user_courses: List[str]) -> str:
     if not rc:
         return "GENERAL"
     rc_up = rc.upper()
+
+    # Keep clean club names (e.g. FIRST ROBOTICS, DECA, MATH LEAGUE) instead of matching "Math league" -> "MATH"
+    if _is_club_or_activity(rc, user_courses):
+        cleaned_club = re.split(r"[:–—|•(]", rc_up)[0].strip()
+        return cleaned_club[:24] if cleaned_club else "OTHER"
+
     for c in user_courses:
         c_up = c.strip().upper()
         if c_up and c_up != "OTHER" and (c_up == rc_up or c_up in rc_up or rc_up in c_up):
@@ -3284,10 +3297,12 @@ def _is_duplicate_task(
 
 def _parse_classroom_due_date(raw_due: str) -> str:
     s = str(raw_due or "").strip()
-    if not s or "no due date" in s.lower():
-        return ""
-    today = get_local_now().date()
     low = s.lower()
+    # "Posted Tuesday, Nov 10" is a creation timestamp on "No due date" items, NOT a due date!
+    if not s or "no due date" in low or low.startswith("posted"):
+        return ""
+
+    today = get_local_now().date()
     if "today" in low:
         return today.isoformat()
     if "tomorrow" in low:
@@ -3295,15 +3310,17 @@ def _parse_classroom_due_date(raw_due: str) -> str:
     if "yesterday" in low:
         return (today - timedelta(days=1)).isoformat()
 
-    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    for idx_d, d_name in enumerate(day_names):
-        if re.search(rf"\b{d_name}\b", low):
-            diff = (idx_d - today.weekday()) % 7
-            return (today + timedelta(days=diff)).isoformat()
-
+    # Strip leading "Due ", leading weekday ("Sunday, Dec 6" -> "Dec 6"), and trailing time (", 11:59 PM")
     s_clean = re.sub(r"^due\s+", "", s, flags=re.I)
+    s_clean = re.sub(
+        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+",
+        "",
+        s_clean,
+        flags=re.I,
+    )
     s_clean = re.sub(r",?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?$", "", s_clean, flags=re.I).strip()
 
+    # 1. Try explicit Month/Day or Full Date FIRST (so "Sunday, Dec 6" parses as Dec 6, not Sunday!)
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
         try:
             return datetime.strptime(s_clean, fmt).date().isoformat()
@@ -3316,6 +3333,14 @@ def _parse_classroom_due_date(raw_due: str) -> str:
             return date(yr, parsed.month, parsed.day).isoformat()
         except ValueError:
             pass
+
+    # 2. Fallback to standalone weekday name (e.g. "Tuesday, 11:59 PM")
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for idx_d, d_name in enumerate(day_names):
+        if re.search(rf"\b{d_name}\b", low):
+            diff = (idx_d - today.weekday()) % 7
+            return (today + timedelta(days=diff)).isoformat()
+
     return ""
 
 
@@ -3350,7 +3375,7 @@ def _parse_classroom_pasted_text(raw_text: str) -> List[Dict[str, str]]:
         "work with a due date", "work without a due date",
     }
     date_line_re = re.compile(
-        r"^(due\s+|today|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"^(due\s+|posted\s+|today|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
         r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}/\d{1,2})",
         re.I,
     )
@@ -3384,15 +3409,25 @@ def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
         "javascript:(function(){try{"
         "if(!location.hostname.includes('classroom.google.com')){"
         "location.href='https://classroom.google.com/a/not-turned-in/all';return;}"
-        "var rows=[],seen={},skip=/^(assignment|quiz|description|more_vert|event|expand_more|expand_less)$/i;"
-        "document.querySelectorAll('a[href*=\"/c/\"][href*=\"/a/\"],a[href*=\"/c/\"][href*=\"/sa/\"]').forEach(function(a){"
+        "var root=document.querySelector('[role=\"main\"]')||document.body;"
+        "root.querySelectorAll('[aria-expanded=\"false\"]').forEach(function(b){try{b.click();}catch(e){}});"
+        "setTimeout(function(){"
+        "var rows=[],seen={},skip=/^(assignment|quiz|question|material|description|more_vert|event|expand_more|expand_less)$/i;"
+        "root.querySelectorAll('a[href*=\"/c/\"]').forEach(function(a){"
+        "var h=a.getAttribute('href')||'';"
+        "if(h.includes('/not-turned-in')||h.includes('/missing')||h.includes('/done'))return;"
         "var row=a.closest('li,[role=\"listitem\"]')||a;"
         "var lines=(row.innerText||a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
         "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
         "if(!seen[k]&&t.length>1){seen[k]=1;rows.push({t:t,c:c,d:d,href:a.href});}}});"
         "if(!rows.length){alert('Open your Google Classroom To-do list first, then click Sync to Tracker again!');return;}"
+        "var fetchWithTimeout=function(url){"
+        "return Promise.race(["
+        "fetch(url,{credentials:'include'}).then(function(r){return r.text();}),"
+        "new Promise(function(_,rej){setTimeout(function(){rej('timeout');},1800);})"
+        "]);};"
         "Promise.all(rows.map(function(it){"
-        "return fetch(it.href,{credentials:'include'}).then(function(r){return r.text();}).then(function(html){"
+        "return fetchWithTimeout(it.href).then(function(html){"
         "var desc='',idx=html.indexOf(JSON.stringify(it.t));"
         "if(idx>-1){var chunk=html.slice(idx+it.t.length+2,idx+2500),es=chunk.indexOf('</script>');"
         "if(es>-1)chunk=chunk.slice(0,es);"
@@ -3405,6 +3440,7 @@ def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
         "var payload=btoa(unescape(encodeURIComponent(JSON.stringify(items))));"
         f"location.href='{clean_url}/?sync='+encodeURIComponent(payload)+'{auto_suffix}';"
         "});"
+        "},450);"
         "}catch(e){alert('Bookmarklet error: '+e.message);}})();"
     )
 
@@ -3442,14 +3478,16 @@ def process_auto_classroom_sync(user_id: str, email: str, incoming_items: List[D
 
         to_add: List[Dict[str, Any]] = []
         skipped_dups = 0
+        skipped_ignored = 0
         for item in incoming_items:
             t_clean = str(item.get("title", "")).strip()
+            raw_c = str(item.get("raw_course", "")).strip()
             if not t_clean:
                 continue
             if t_clean.lower() in ignored_set:
-                skipped_dups += 1
+                skipped_ignored += 1
                 continue
-            mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+            mapped_c = _match_classroom_course(raw_c, user_courses)
             parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
             if _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs):
                 skipped_dups += 1
@@ -3464,18 +3502,24 @@ def process_auto_classroom_sync(user_id: str, email: str, incoming_items: List[D
                 "due_date": parsed_due,
                 "status": "Not Started",
                 "priority": priority_to_int("Medium"),
-                "atype": _infer_classroom_atype(f"{t_clean} {details_txt}"),
+                "atype": _infer_classroom_atype(f"{t_clean} {details_txt}", raw_c, user_courses),
                 "eta": "",
-                "notes": _format_synced_note(details_txt, item.get("raw_course", "")),
+                "notes": _format_synced_note(details_txt, raw_c),
                 "created_at": get_local_now().isoformat(),
                 "prev_status": "Not Started",
             })
 
+        notes_parts = []
+        if skipped_dups:
+            notes_parts.append(f"{skipped_dups} already tracked")
+        if skipped_ignored:
+            notes_parts.append(f"{skipped_ignored} previously deleted — click Sync to restore")
+        extra_str = f" ({', '.join(notes_parts)})" if notes_parts else ""
+
         if to_add:
             upsert_assignments(to_add)
-            dup_note = f" ({skipped_dups} skipped)" if skipped_dups else ""
-            return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{dup_note}"
-        return f"✅ Google Classroom checked — all {skipped_dups} assignment{'s are' if skipped_dups != 1 else ' is'} already in your tracker!"
+            return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{extra_str}"
+        return f"✅ Google Classroom checked ({len(incoming_items)} found) — no new items to add{extra_str}."
 
     def _fallback():
         return "⚠️ Classroom auto-sync switched to manual backup mode. Open Sync → Quick Paste Backup to import."
@@ -3484,7 +3528,6 @@ def process_auto_classroom_sync(user_id: str, email: str, incoming_items: List[D
 
 
 def _render_classroom_sync_v1_fallback(user_id: str):
-    """Previous working Quick-Paste sync fallback if new Classroom Sync v2 ever throws an error."""
     user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
     st.caption("Open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
     pasted_blob = st.text_area("Paste Classroom To-do Page Text Here", height=150, key="classroom_paste_fallback_area")
@@ -3495,7 +3538,8 @@ def _render_classroom_sync_v1_fallback(user_id: str):
         else:
             to_add = []
             for item in parsed_items:
-                mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+                raw_c = item.get("raw_course", "")
+                mapped_c = _match_classroom_course(raw_c, user_courses)
                 parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
                 to_add.append({
                     "id": str(uuid.uuid4()),
@@ -3505,9 +3549,9 @@ def _render_classroom_sync_v1_fallback(user_id: str):
                     "due_date": parsed_due,
                     "status": "Not Started",
                     "priority": priority_to_int("Medium"),
-                    "atype": _infer_classroom_atype(item["title"]),
+                    "atype": _infer_classroom_atype(item["title"], raw_c, user_courses),
                     "eta": "",
-                    "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})",
+                    "notes": f"Synced from Google Classroom ({raw_c})",
                     "created_at": get_local_now().isoformat(),
                     "prev_status": "Not Started",
                 })
@@ -3532,10 +3576,11 @@ def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str
 
         for idx, item in enumerate(incoming_items):
             t_clean = item["title"]
+            raw_c = str(item.get("raw_course", "")).strip()
             details_txt = str(item.get("details", "")).strip()
-            mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+            mapped_c = _match_classroom_course(raw_c, user_courses)
             parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-            inferred_type = _infer_classroom_atype(f"{t_clean} {details_txt}")
+            inferred_type = _infer_classroom_atype(f"{t_clean} {details_txt}", raw_c, user_courses)
             is_dup = (t_clean.lower() in ignored_set) or _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs)
 
             due_lbl = f"Due {parsed_due}" if parsed_due else "No due date"
@@ -3557,7 +3602,7 @@ def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str
                     "priority": priority_to_int(default_prio),
                     "atype": inferred_type,
                     "eta": "",
-                    "notes": _format_synced_note(details_txt, item.get("raw_course", "")),
+                    "notes": _format_synced_note(details_txt, raw_c),
                     "created_at": get_local_now().isoformat(),
                     "prev_status": "Not Started",
                 })
@@ -3578,7 +3623,7 @@ def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str
     tab_bm, tab_paste = st.tabs(["⚡ 1-Click Bookmarklet Setup", "📋 Quick Paste Backup"])
 
     with tab_bm:
-        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom scans your To-do list, fetches assignment instructions, and auto-imports your tasks.")
+        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom auto-expands all To-do sections (No due date, This week, Later) and imports everything.")
         detected_url = _detect_live_app_url(shs_cfg.get("app_url", ""))
         app_url_input = st.text_input(
             "1. Your Streamlit App URL (auto-detected)",
@@ -3602,17 +3647,18 @@ def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str
         st.code(bm_code, language="text")
         st.markdown(
             """
-            **3. How to use it:**
+            **3. How to save or update it:**
             1. Press **Ctrl+Shift+B** (or **Cmd+Shift+B** on Mac) to show your bookmarks bar.
-            2. Right-click the bookmarks bar → **Add page...** (or **Add Bookmark...** in Firefox).
-            3. Name it **`Sync to Tracker`** and paste the code above into the **URL** box.
-            4. Click **`Sync to Tracker`** from any website to jump to Classroom To-do, then click **`Sync to Tracker`** again to import!
+            2. Right-click **`Sync to Tracker`** → **Edit...** (or right-click the bar → **Add Bookmark...**).
+            3. Paste the updated code above into the **URL** box and click **Save**.
+            4. Click **`Sync to Tracker`** from any website to jump to Classroom To-do, then click **`Sync to Tracker`** again to import all sections!
             """
         )
         if ignored_set:
-            if st.button(f"Reset {len(ignored_set)} Dismissed Classroom Item(s)", key="reset_ignored_sync_btn"):
+            st.info(f"You have {len(ignored_set)} previously deleted Classroom item(s) hidden from auto-sync: {', '.join(sorted(ignored_set))}")
+            if st.button("Allow Previously Deleted Classroom Items to Re-Sync", key="reset_ignored_sync_btn"):
                 _write_ignored_sync(user_id, [])
-                st.success("Dismissed Classroom items cleared!")
+                st.success("Cleared! Click Sync to Tracker on Classroom to re-import them.")
 
     with tab_paste:
         st.caption("If your school Chromebook blocks bookmarklets, open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
@@ -3667,6 +3713,7 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                     course = (row.get("course") or "MATH").upper()
                     atype = row.get("atype") or "Homework"
                     due_d = parse_date_iso_or_empty(row.get("due_date"))
+                    has_due = bool(str(row.get("due_date") or "").strip() and due_d)
                     due_text = format_mdy(due_d)
                     days_text, _ = days_left(due_d)
 
@@ -3693,9 +3740,10 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
                     eta = str(row.get("eta") or "").strip()
                     notes = str(row.get("notes") or "").strip()
                     eta_snippet = f" &bull; Est: {eta}" if eta else ""
+                    due_display = f"Due {due_text} ({days_text}){eta_snippet}" if has_due else f"No due date{eta_snippet}"
                     st.markdown(
                         f"<div class='card-footer-row'>"
-                        f"<div class='card-due-text'>Due {due_text} ({days_text}){eta_snippet}</div>"
+                        f"<div class='card-due-text'>{due_display}</div>"
                         f"<div class='prio-{prio_label.lower()}'>Priority: {format_priority_display(prio_num, user_prio_mode)}</div>"
                         f"</div>",
                         unsafe_allow_html=True,
@@ -4014,247 +4062,245 @@ def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light:
                         slot_dur_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
                         c_chk, c_text = st.columns([0.45, 7.55])
                         with c_chk:
-                            st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s["title"], s, user_id))
+                            st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s.get("title"), s, user_id))
                         with c_text:
-                            prefix_html = f"<span class='slot-badge'>{s['time']}</span> — " if show_time_slots else ""
-                            st.markdown(
-                                f"{prefix_html}<span class='slot-title-text'>{s['title']}</span> {get_course_badge_html(s['course'], is_light=is_light)} "
-                                f"<span class='slot-meta-text'>| Priority: {slot_prio_str} ({slot_dur_str})</span>",
-                                unsafe_allow_html=True,
-                            )
+                            if show_time_slots:
+                                st.markdown(f"<div style='padding-top:3px;'><span class='slot-badge'>{s['time']}</span> &nbsp; {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"<div style='padding-top:3px;'>• {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
                 else:
-                    st.markdown("<span class='slot-meta-text'>No work scheduled for this day. Free time!</span>", unsafe_allow_html=True)
+                    st.caption("Free / No assignments scheduled")
                 st.markdown("</div>", unsafe_allow_html=True)
 
 
 @fragment_decorator
 def render_completed_recovery_fragment(user_id: str, is_light: bool):
-    st.markdown("<div class='section-heading'>Completed Tasks & Recovery Center</div>", unsafe_allow_html=True)
-    st.caption("Finished assignments stay here until their due date passes. Restoring an item returns it to your active tab with its previous status.")
+    df_all = get_assignments_cached(user_id)
+    st.markdown("<div class='section-heading'>Completed & Recovery Center</div>", unsafe_allow_html=True)
+    st.caption("Tasks you checked off today or finished before their due date can be restored right here.")
 
-    rec_col1, rec_col2 = st.columns(2)
-    with rec_col1:
-        st.markdown("<div class='section-heading' style='font-size:0.95rem;'>1. Daily Planner Slots Checked Today</div>", unsafe_allow_html=True)
-        completed_slots_dict = get_completed_slots_cached(user_id)
-        if completed_slots_dict:
-            for s_key, s_data in list(completed_slots_dict.items()):
-                c_info, c_act = st.columns([3.8, 1.6])
-                with c_info:
-                    st.markdown(
-                        f"<div class='recovery-card'><div><b>{s_data.get('title')}</b> {get_course_badge_html(s_data.get('course'), is_light=is_light)}"
-                        f"<div class='card-note-text'>{s_data.get('day_name')} &bull; {s_data.get('time')}</div></div></div>",
-                        unsafe_allow_html=True,
-                    )
-                with c_act:
-                    st.button("Restore", key=f"rec_slot_{s_key}", on_click=restore_single_daily_slot, args=(s_key, user_id), use_container_width=True)
-        else:
-            st.info("No daily planner slots marked completed today.")
+    completed_slots_dict = get_completed_slots_cached(user_id)
+    st.markdown("#### Today's Completed Study Sessions")
+    if completed_slots_dict:
+        for s_key, s_info in list(completed_slots_dict.items()):
+            rc1, rc2 = st.columns([5.5, 1.5])
+            with rc1:
+                st.markdown(f"<div class='recovery-card'><div>{get_course_badge_html(s_info.get('course', 'GENERAL'), is_light=is_light)} &nbsp; <span class='slot-title-text'>{s_info.get('title', 'Session')}</span> <span class='slot-meta-text'>({s_info.get('day_name', '')} • {s_info.get('time', '')})</span></div></div>", unsafe_allow_html=True)
+            with rc2:
+                st.button("Undo / Restore", key=f"rec_slot_{s_key}", on_click=restore_single_daily_slot, args=(s_key, user_id), use_container_width=True)
+    else:
+        st.caption("No daily study slots have been checked off today.")
 
-    with rec_col2:
-        st.markdown("<div class='section-heading' style='font-size:0.95rem;'>2. Finished Assignments (Database)</div>", unsafe_allow_html=True)
-        df_all = get_assignments_cached(user_id)
-        df_done_db = df_all[df_all["status"] == "Done"].copy()
-        if not df_done_db.empty:
-            for _, r_done in df_done_db.iterrows():
-                r_aid = r_done.get("id")
-                c_info_db, c_act_db = st.columns([3.8, 1.6])
-                with c_info_db:
-                    st.markdown(
-                        f"<div class='recovery-card'><div><b>{r_done.get('title')}</b> {get_course_badge_html(r_done.get('course'), is_light=is_light)}"
-                        f"<div class='card-note-text'>Type: {r_done.get('atype')} &bull; Due: {r_done.get('due_date')}</div></div></div>",
-                        unsafe_allow_html=True,
-                    )
-                with c_act_db:
-                    st.button("Restore", key=f"rec_db_{r_aid}", on_click=restore_single_assignment, args=(r_done.to_dict(),), use_container_width=True)
-        else:
-            st.info("No main database assignments currently marked as 'Done'.")
+    st.markdown("---")
+    st.markdown("#### Completed Assignments (Not Yet Expired)")
+    df_done = df_all[df_all["status"] == "Done"]
+    if not df_done.empty:
+        for _, row in df_done.iterrows():
+            aid = row.get("id")
+            due_d = parse_date_iso_or_empty(row.get("due_date"))
+            rc1, rc2 = st.columns([5.5, 1.5])
+            with rc1:
+                st.markdown(f"<div class='recovery-card'><div>{get_course_badge_html(row.get('course', 'GENERAL'), is_light=is_light)} &nbsp; <span class='slot-title-text'>{row.get('title', 'Assignment')}</span> <span class='slot-meta-text'>(Due {format_mdy(due_d)} • {row.get('atype', 'Homework')})</span></div></div>", unsafe_allow_html=True)
+            with rc2:
+                st.button("Restore Task", key=f"rec_task_{aid}", on_click=restore_single_assignment, args=(row.to_dict(),), use_container_width=True)
+    else:
+        st.caption("No completed assignments waiting in recovery.")
 
 
 # -----------------------
 # Main Application Entry
 # -----------------------
-incoming_sync_param = st.query_params.get("sync")
-incoming_auto_param = str(st.query_params.get("auto", "")).strip() == "1"
-if incoming_sync_param:
-    decoded_sync = _decode_classroom_sync_payload(str(incoming_sync_param))
-    if decoded_sync:
-        if incoming_auto_param:
-            st.session_state["_classroom_auto_sync"] = decoded_sync
-        else:
-            st.session_state["_classroom_sync_preview"] = decoded_sync
+def main():
     try:
-        st.query_params.clear()
+        qp = st.query_params
+        if "sync" in qp:
+            raw_sync = qp.get("sync")
+            if isinstance(raw_sync, list):
+                raw_sync = raw_sync[0] if raw_sync else ""
+            raw_auto = qp.get("auto", "")
+            if isinstance(raw_auto, list):
+                raw_auto = raw_auto[0] if raw_auto else ""
+            decoded_items = _decode_classroom_sync_payload(str(raw_sync or ""))
+            if decoded_items:
+                if str(raw_auto) == "1":
+                    st.session_state["_classroom_auto_sync"] = decoded_items
+                else:
+                    st.session_state["_classroom_sync_preview"] = decoded_items
+            st.query_params.clear()
     except Exception:
         pass
 
-user = st.session_state.get("user")
-if not user:
-    render_terminal_auth_page()
-    st.stop()
+    user = st.session_state.get("user")
+    if not user:
+        render_terminal_auth_page()
+        return
 
-user_id = str(user.get("id"))
-email = str(user.get("email", "User"))
-admin_mode = is_admin_user(email)
+    user_id = user.get("id")
+    email = user.get("email", "")
+    hydrate_user_session(user_id)
 
-hydrate_user_session(user_id)
+    theme_cfg = get_theme_cached(user_id)
+    is_light = (theme_cfg.get("mode", "Dark") == "Light")
+    st.markdown(build_theme_css(theme_cfg), unsafe_allow_html=True)
 
-auto_sync_items = st.session_state.pop("_classroom_auto_sync", None)
-if auto_sync_items:
-    st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, email, auto_sync_items)
+    user_prio_mode = get_prio_cached(user_id) or "Low / Medium / High"
+    shs_cfg = get_shs_cached(user_id)
 
-user_theme = get_theme_cached(user_id)
-is_light_theme = (user_theme.get("mode") == "Light")
-st.markdown(build_theme_css(user_theme), unsafe_allow_html=True)
+    if "_classroom_auto_sync" in st.session_state:
+        auto_items = st.session_state.pop("_classroom_auto_sync")
+        st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, email, auto_items)
 
-active_prio_mode = get_prio_cached(user_id)
-seen_updates_ver = get_seen_updates_cached(user_id)
-seen_releases_list = get_seen_releases_cached(user_id)
-user_prio_mode = active_prio_mode or "Low / Medium / High"
-
-# Detect any Beta features that have been promoted to Public Release and not yet announced to this user
-feature_statuses = get_global_feature_statuses()
-newly_released_keys = [
-    fk for fk, st_val in feature_statuses.items()
-    if st_val == "released" and fk in FEATURE_REGISTRY and fk not in seen_releases_list
-]
-if admin_mode and newly_released_keys:
-    # Admin promoted it themselves; silently mark seen
-    _write_seen_releases(user_id, seen_releases_list + newly_released_keys)
-    newly_released_keys = []
-
-pending_edit_aid = st.session_state.pop("_pending_edit_aid", None)
-pending_fb_prefill = st.session_state.pop("_open_feedback_prefill", None)
-
-if pending_edit_aid:
-    show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
-elif pending_fb_prefill is not None:
-    show_feedback_dialog(user_id, email, prefill_cat=pending_fb_prefill)
-elif st.session_state.get("_classroom_sync_preview"):
-    show_classroom_sync_dialog(user_id, email, user_prio_mode)
-elif newly_released_keys:
-    show_public_release_dialog(user_id, newly_released_keys)
-elif seen_updates_ver != CURRENT_APP_VERSION:
-    show_updates_dialog(user_id, email, is_first_time=True)
-elif not get_courses_cached(user_id):
-    show_welcome_courses_dialog(user_id)
-elif not active_prio_mode:
-    show_prio_config_dialog(user_id)
-
-unread_msg_count = get_unread_feedback_count(user_id, email)
-sync_has_beta = is_feature_in_beta("classroom_sync_v2") and not admin_mode
-
-logo_fill = "#0f172a" if is_light_theme else "#ffffff"
-col_header_left, col_header_right = st.columns([1.8, 3.2])
-
-with col_header_left:
-    admin_tag = " &bull; <span class='accent-text'>Creator Mode</span>" if admin_mode else ""
-    st.markdown(
-        f"""
-        <div class='header-brand-box'>
-            <div style='display:flex; align-items:center; gap:10px;'>
-                <svg width='26' height='26' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
-                    <rect x='2' y='3' width='12' height='12' rx='2' fill='{logo_fill}' opacity='0.45'/>
-                    <rect x='6' y='7' width='12' height='12' rx='2' fill='{logo_fill}' opacity='0.75'/>
-                    <rect x='10' y='11' width='12' height='12' rx='2' fill='{logo_fill}'/>
-                </svg>
-                <span class='app-title' style='line-height:1;'>Assignment Tracker</span>
-            </div>
-            <div class='app-subtitle'>{email} &bull; <span class='accent-text'>System: {user_prio_mode}</span>{admin_tag}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with col_header_right:
-    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns([0.92, 0.92, 0.92, 0.92, 0.85, 0.92, 1.05, 0.92])
-    with b1:
-        if st.button("+ Task", key="toolbar_add", use_container_width=True):
-            show_add_assignment_dialog(user_id, user_prio_mode)
-    with b2:
-        sync_label = "Sync 🧪" if sync_has_beta else "Sync"
-        if st.button(sync_label, key="toolbar_sync", use_container_width=True):
-            show_classroom_sync_dialog(user_id, email, user_prio_mode)
-    with b3:
-        if st.button("Courses", key="toolbar_courses", use_container_width=True):
-            show_manage_courses_dialog(user_id)
-    with b4:
-        if st.button("Priority", key="toolbar_prio_sys", use_container_width=True):
-            show_prio_config_dialog(user_id)
-    with b5:
-        if st.button("Theme", key="toolbar_theme", use_container_width=True):
-            show_theme_dialog(user_id)
-    with b6:
-        if st.button("Updates", key="toolbar_updates", use_container_width=True):
-            show_updates_dialog(user_id, email, is_first_time=False)
-    with b7:
-        if admin_mode:
-            inbox_lbl = f"Inbox ({unread_msg_count})" if unread_msg_count > 0 else "Inbox"
-            if st.button(inbox_lbl, key="toolbar_admin_inbox", use_container_width=True):
-                show_admin_feedback_inbox_dialog(user_id, email)
-        else:
-            fb_lbl = f"Feedback ({unread_msg_count})" if unread_msg_count > 0 else "Feedback"
-            if st.button(fb_lbl, key="toolbar_feedback", use_container_width=True):
-                show_feedback_dialog(user_id, email)
-    with b8:
-        if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
-            sign_out_user()
-
-# Admin-only broken-feature fallback alert banner
-if admin_mode:
-    unresolved_errors = get_unresolved_feature_errors()
-    for err_row in unresolved_errors[:2]:
-        e_id = str(err_row["id"])
-        ec1, ec2 = st.columns([4.5, 1.1])
-        with ec1:
+    # Admin System Crash / Fallback Alert Banner
+    if is_admin_user(email):
+        unresolved_errs = get_unresolved_feature_errors()
+        if unresolved_errs:
+            latest_err = unresolved_errs[0]
             st.markdown(
                 f"<div class='crash-alert-box'>"
-                f"<b>🚨 Fallback Triggered — {err_row.get('feature_name')}:</b> <code>{err_row.get('error_msg')}</code> "
-                f"<span class='slot-meta-text'>(User: {err_row.get('user_email')} • Open Inbox → Feature Health for full traceback)</span>"
+                f"<div style='font-weight:800; font-size:0.88rem;'>🚨 Feature Fallback Alert ({len(unresolved_errs)} active) — {latest_err.get('feature_name')}</div>"
+                f"<div style='font-size:0.80rem; margin-top:2px;'><b>Error:</b> {latest_err.get('error_msg')} &bull; <i>Users were safely routed to fallback mode.</i></div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
-        with ec2:
-            if st.button("Dismiss Alert", key=f"top_dismiss_err_{e_id}", use_container_width=True):
-                resolve_feature_error(e_id)
-                safe_rerun("app")
+            ec1, ec2 = st.columns([2, 1])
+            with ec1:
+                if st.button("🔍 Inspect Error & Logs in Inbox", key="top_inspect_err_btn", use_container_width=True):
+                    show_admin_feedback_inbox_dialog(user_id, email)
+            with ec2:
+                if st.button("✅ Dismiss Alert", key="top_dismiss_err_btn", use_container_width=True):
+                    resolve_feature_error(str(latest_err["id"]))
+                    safe_rerun("app")
 
-sync_banner_msg = st.session_state.pop("_sync_banner_msg", None)
-if sync_banner_msg:
-    st.success(sync_banner_msg)
+    # Header Toolbar (8 actions)
+    col_brand, col_actions = st.columns([1.85, 3.15])
+    with col_brand:
+        creator_tag = " &bull; Creator Mode" if is_admin_user(email) else ""
+        st.markdown(
+            f"""
+            <div class='header-brand-box'>
+                <div style='display:flex; align-items:center; gap:9px;'>
+                    <svg width='24' height='24' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                        <rect x='2' y='3' width='12' height='12' rx='2' fill='currentColor' opacity='0.45'/>
+                        <rect x='6' y='7' width='12' height='12' rx='2' fill='currentColor' opacity='0.75'/>
+                        <rect x='10' y='11' width='12' height='12' rx='2' fill='currentColor'/>
+                    </svg>
+                    <span class='app-title'>Assignment Tracker</span>
+                </div>
+                <div class='app-subtitle'>{email} &bull; System: <span class='accent-text'>{user_prio_mode}</span>{creator_tag}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-now_banner = get_local_now()
-today_str = now_banner.strftime("%A, %B %d, %Y")
-shs_today_cfg = get_shs_cached(user_id)
-shs_today_info = get_shs_day_info(now_banner.date(), shs_today_cfg.get("sheet_url", ""))
-shs_letter_today = shs_today_info.get("letter", "")
-shs_sched_today = shs_today_info.get("schedule", "Daily")
+    unread_fb_count = get_unread_feedback_count(user_id, email)
+    inbox_btn_label = f"Inbox ({unread_fb_count})" if (is_admin_user(email) and unread_fb_count > 0) else (
+        "Inbox" if is_admin_user(email) else (f"Feedback ({unread_fb_count})" if unread_fb_count > 0 else "Feedback")
+    )
+    sync_btn_label = "Sync 🧪" if (is_feature_in_beta("classroom_sync_v2") and not is_admin_user(email)) else "Sync"
 
-if shs_letter_today in ("A", "B", "C", "D", "X"):
-    shs_pill_html = f"<span class='shs-day-pill'>SHS: {shs_letter_today} Day ({shs_sched_today})</span>"
-elif shs_letter_today == "NO SCHOOL":
-    shs_pill_html = f"<span class='shs-day-pill'>SHS: No School ({shs_today_info.get('note', 'Holiday')})</span>"
-else:
-    shs_pill_html = "<span class='shs-day-pill'>SHS: Weekend</span>"
+    with col_actions:
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        b1, b2, b3, b4, b5, b6, b7, b8 = st.columns(8)
+        with b1:
+            add_btn = st.button("+ Task", key="top_add_btn", use_container_width=True)
+        with b2:
+            sync_btn = st.button(sync_btn_label, key="top_sync_btn", use_container_width=True)
+        with b3:
+            courses_btn = st.button("Courses", key="top_courses_btn", use_container_width=True)
+        with b4:
+            prio_btn = st.button("Priority", key="top_prio_btn", use_container_width=True)
+        with b5:
+            theme_btn = st.button("Theme", key="top_theme_btn", use_container_width=True)
+        with b6:
+            updates_btn = st.button("Updates", key="top_updates_btn", use_container_width=True)
+        with b7:
+            feedback_btn = st.button(inbox_btn_label, key="top_feedback_btn", use_container_width=True)
+        with b8:
+            signout_btn = st.button("Sign Out", key="top_signout_btn", use_container_width=True)
 
-st.markdown(f"<div class='date-banner'>Today's Date: {today_str}{shs_pill_html}</div>", unsafe_allow_html=True)
+    # Today's Date + Live SHS Rotation Pill Banner
+    now_local = get_local_now()
+    shs_today_info = get_shs_day_info(now_local.date(), shs_cfg.get("sheet_url", ""))
+    t_letter = shs_today_info.get("letter", "A")
+    t_sched = shs_today_info.get("schedule", "Daily")
+    if t_letter == "WEEKEND":
+        shs_pill_text = "SHS: Weekend"
+    elif t_letter == "NO SCHOOL":
+        shs_pill_text = f"SHS: No School ({shs_today_info.get('note', 'Holiday')})"
+    else:
+        sched_tag = f" • {t_sched}" if t_sched != "Daily" else ""
+        shs_pill_text = f"SHS: {t_letter} Day{sched_tag}"
 
-active_tab = st.radio(
-    "Navigation",
-    ["Assignments", "Tests & Quizzes", "Other", "Schedule & AI Planner", "SHS Bell Schedule", "Completed & Recovery"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="main_nav_radio",
-)
+    st.markdown(
+        f"<div class='date-banner'>Today's Date: {now_local.strftime('%A, %B %d, %Y')} "
+        f"<span class='shs-day-pill'>{shs_pill_text}</span></div>",
+        unsafe_allow_html=True,
+    )
 
-if active_tab == "Assignments":
-    render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light_theme, "reg_")
-elif active_tab == "Tests & Quizzes":
-    render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light_theme, "tst_")
-elif active_tab == "Other":
-    render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light_theme, "oth_")
-elif active_tab == "Schedule & AI Planner":
-    render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light_theme)
-elif active_tab == "SHS Bell Schedule":
-    render_shs_bell_schedule_fragment(user_id, is_light_theme)
-elif active_tab == "Completed & Recovery":
-    render_completed_recovery_fragment(user_id, is_light_theme)
+    if "_sync_banner_msg" in st.session_state:
+        st.success(st.session_state.pop("_sync_banner_msg"))
+
+    if signout_btn:
+        sign_out_user()
+        return
+
+    # Modal Routing
+    pending_edit_aid = st.session_state.pop("_pending_edit_aid", None)
+    prefill_fb = st.session_state.pop("_open_feedback_prefill", None)
+    seen_ver = get_seen_updates_cached(user_id)
+
+    global_statuses = get_global_feature_statuses()
+    seen_releases = get_seen_releases_cached(user_id)
+    newly_released_for_user = [
+        fk for fk, st_val in global_statuses.items()
+        if st_val == "released" and fk in FEATURE_REGISTRY and fk not in seen_releases
+    ]
+
+    if add_btn:
+        show_add_assignment_dialog(user_id, user_prio_mode)
+    elif sync_btn or "_classroom_sync_preview" in st.session_state:
+        show_classroom_sync_dialog(user_id, email, user_prio_mode)
+    elif pending_edit_aid:
+        show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
+    elif courses_btn:
+        show_manage_courses_dialog(user_id)
+    elif prio_btn:
+        show_prio_config_dialog(user_id)
+    elif theme_btn:
+        show_theme_dialog(user_id)
+    elif updates_btn:
+        show_updates_dialog(user_id, email, is_first_time=False)
+    elif feedback_btn or prefill_fb:
+        if is_admin_user(email):
+            show_admin_feedback_inbox_dialog(user_id, email)
+        else:
+            show_feedback_dialog(user_id, email, prefill_cat=prefill_fb or "")
+    elif seen_ver != CURRENT_APP_VERSION:
+        show_updates_dialog(user_id, email, is_first_time=True)
+    elif newly_released_for_user and not is_admin_user(email):
+        show_public_release_dialog(user_id, newly_released_for_user)
+    elif not get_courses_cached(user_id):
+        show_welcome_courses_dialog(user_id)
+    elif get_prio_cached(user_id) is None:
+        show_prio_config_dialog(user_id)
+
+    # Top Navigation Pill Bar
+    nav_options = ["Assignments", "Tests & Quizzes", "Other", "Schedule & AI Planner", "SHS Bell Schedule", "Completed & Recovery"]
+    active_view = st.radio("Workspace Navigation", nav_options, horizontal=True, label_visibility="collapsed", key="main_workspace_nav")
+
+    if active_view == "Assignments":
+        render_assignment_grid_fragment(user_id, "regular", user_prio_mode, is_light, "reg_")
+    elif active_view == "Tests & Quizzes":
+        render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light, "tst_")
+    elif active_view == "Other":
+        render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light, "oth_")
+    elif active_view == "Schedule & AI Planner":
+        render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light)
+    elif active_view == "SHS Bell Schedule":
+        render_shs_bell_schedule_fragment(user_id, is_light)
+    elif active_view == "Completed & Recovery":
+        render_completed_recovery_fragment(user_id, is_light)
+
+
+if __name__ == "__main__":
+    main()
