@@ -1,5 +1,5 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Classroom Sync, Theme Studio & Beta/Fallback Engine
+📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Theme Studio & Feature Release Engine
 """
 
 from __future__ import annotations
@@ -43,17 +43,55 @@ def is_admin_user(email: str) -> bool:
 
 
 # -----------------------
-# Central Beta & Feature Release Registry
+# Central Feature Release & Visibility Registry
 # -----------------------
 FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
-    "classroom_sync_v2": {
-        "name": "Google Classroom Auto-Expand & Full To-Do Sync",
-        "version": "3.9",
-        "default_status": "beta",
-        "location_hint": "Sync button in the top toolbar",
-        "beta_summary": "Auto-expands collapsed To-do sections (No due date, This week, Later), imports forms/materials/clubs into Other, and fetches instructions.",
-        "release_summary": "Google Classroom Full To-Do Sync is now officially live! It auto-expands all To-do sections, handles club posts, and pulls instructions into notes.",
+    "shs_bell_schedule": {
+        "name": "SHS Bell Schedule & Live Rotation",
+        "version": "3.4",
+        "default_status": "released",
+        "location_hint": "SHS Bell Schedule tab & top rotation pill",
+        "beta_summary": "Live A/B/C/D/X rotation, Connect Wednesdays, delays, early dismissals, lunch waves, and class countdowns.",
+        "release_summary": "The live Simsbury High School Bell Schedule & Rotation tracker is officially live for everyone!",
     },
+    "ai_study_planner": {
+        "name": "AI Daily Action Plan & Auto-Scheduler",
+        "version": "2.5",
+        "default_status": "released",
+        "location_hint": "Schedule & AI Planner tab",
+        "beta_summary": "Automatically schedules daily homework and study time slots around your weekly commitments and daily time caps.",
+        "release_summary": "The Smart AI Daily Action Plan is now officially live!",
+    },
+    "theme_studio": {
+        "name": "Theme & Appearance Studio",
+        "version": "3.2",
+        "default_status": "released",
+        "location_hint": "Theme button in the top toolbar",
+        "beta_summary": "Customize Dark or eye-friendly Light modes, color presets, custom gradients, and photo backgrounds.",
+        "release_summary": "The Theme & Appearance Studio is now officially live for all users!",
+    },
+    "completed_recovery": {
+        "name": "Completed & 1-Click Recovery Center",
+        "version": "3.0",
+        "default_status": "released",
+        "location_hint": "Completed & Recovery tab",
+        "beta_summary": "Restore finished tasks or today's checked-off study sessions with one click.",
+        "release_summary": "The Completed & Recovery Center is now officially live!",
+    },
+    "custom_priority_scales": {
+        "name": "1–10 Slider & Dual Priority System",
+        "version": "2.5",
+        "default_status": "released",
+        "location_hint": "Priority button in the top toolbar",
+        "beta_summary": "Switch between Low/Medium/High labels, a 1–10 numerical slider, or both combined.",
+        "release_summary": "Custom 1–10 Priority Scales are now officially live!",
+    },
+}
+
+FEATURE_STAGE_LABELS: Dict[str, str] = {
+    "released": "🟢 Public Release (Live for Everyone)",
+    "beta": "🧪 Beta Release (Testing Banner for Users)",
+    "admin_only": "🔒 Admin Only (Removed for Everyone Else)",
 }
 
 
@@ -516,6 +554,14 @@ div[data-testid="stDialog"] div[role="dialog"] {
     margin-bottom: 10px;
 }
 
+.admin-hidden-box {
+    background: rgba(239, 68, 68, 0.13);
+    border: 1.5px solid rgba(239, 68, 68, 0.50);
+    border-radius: 11px;
+    padding: 9px 14px;
+    margin-bottom: 10px;
+}
+
 .crash-alert-box {
     background: rgba(244, 63, 94, 0.16);
     border: 1.5px solid rgba(244, 63, 94, 0.65);
@@ -780,6 +826,17 @@ div[data-testid="stDialog"] div[role="dialog"] {
     margin-right: 6px;
 }
 
+.update-hidden-badge {
+    background: #ef4444;
+    color: #ffffff !important;
+    padding: 2px 8px;
+    border-radius: 5px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    margin-right: 6px;
+}
+
 .update-old-badge {
     background: var(--accent-soft);
     color: var(--text-primary) !important;
@@ -970,7 +1027,6 @@ SYSTEM_TITLES = {
     "__SYSTEM_SEEN_RELEASES__",
     "__SYSTEM_THEME_CONFIG__",
     "__SYSTEM_SHS_CONFIG__",
-    "__SYSTEM_IGNORED_SYNC__",
 }
 
 
@@ -1466,7 +1522,9 @@ def init_db_once():
             CREATE TABLE IF NOT EXISTS feature_flags (
                 feature_key TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                display_name TEXT,
+                summary_txt TEXT
             );
         """))
         conn.execute(text("""
@@ -1485,6 +1543,8 @@ def init_db_once():
     for alter_sql in [
         "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS is_read_admin INTEGER DEFAULT 0;",
         "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS is_read_user INTEGER DEFAULT 1;",
+        "ALTER TABLE feature_flags ADD COLUMN IF NOT EXISTS display_name TEXT;",
+        "ALTER TABLE feature_flags ADD COLUMN IF NOT EXISTS summary_txt TEXT;",
     ]:
         try:
             with engine.begin() as conn:
@@ -1501,30 +1561,64 @@ except Exception as e:
 
 
 # -----------------------
-# Global Feature Flags, Fallback Guard & Error Alerting
+# Global Feature Flags, Visibility Guard & Error Alerting
 # -----------------------
+def get_all_registered_features(force_refresh: bool = False) -> Dict[str, Dict[str, str]]:
+    if not force_refresh and "_all_registered_features" in st.session_state:
+        return st.session_state["_all_registered_features"]
+
+    merged: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in FEATURE_REGISTRY.items()}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT feature_key, status, display_name, summary_txt FROM feature_flags")
+            ).mappings().all()
+        for r in rows:
+            fk = str(r["feature_key"])
+            if fk not in merged and r.get("display_name"):
+                merged[fk] = {
+                    "name": str(r.get("display_name") or fk),
+                    "version": CURRENT_APP_VERSION,
+                    "default_status": str(r.get("status") or "beta"),
+                    "location_hint": "Custom Feature Flag",
+                    "beta_summary": str(r.get("summary_txt") or "Feature currently in testing."),
+                    "release_summary": str(r.get("summary_txt") or f"{r.get('display_name') or fk} is now officially live!"),
+                    "is_custom": "1",
+                }
+    except Exception:
+        pass
+
+    st.session_state["_all_registered_features"] = merged
+    return merged
+
+
 def get_global_feature_statuses(force_refresh: bool = False) -> Dict[str, str]:
     if not force_refresh and "_global_feature_statuses" in st.session_state:
         return st.session_state["_global_feature_statuses"]
 
-    statuses: Dict[str, str] = {k: v.get("default_status", "released") for k, v in FEATURE_REGISTRY.items()}
+    all_feats = get_all_registered_features(force_refresh=force_refresh)
+    statuses: Dict[str, str] = {k: v.get("default_status", "released") for k, v in all_feats.items()}
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("SELECT feature_key, status FROM feature_flags")).mappings().all()
         db_map = {str(r["feature_key"]): str(r["status"]) for r in rows}
         missing = []
-        for f_key, meta in FEATURE_REGISTRY.items():
+        for f_key, meta in all_feats.items():
             if f_key in db_map:
                 statuses[f_key] = db_map[f_key]
             else:
-                missing.append((f_key, meta.get("default_status", "released")))
+                missing.append((f_key, meta.get("default_status", "released"), meta.get("name", f_key), meta.get("beta_summary", "")))
         if missing:
             now_iso = get_local_now().isoformat()
             with engine.begin() as conn:
-                for fk, st_val in missing:
+                for fk, st_val, d_name, s_txt in missing:
                     conn.execute(
-                        text("INSERT INTO feature_flags (feature_key, status, updated_at) VALUES (:k, :s, :u) ON CONFLICT (feature_key) DO NOTHING"),
-                        {"k": fk, "s": st_val, "u": now_iso},
+                        text("""
+                            INSERT INTO feature_flags (feature_key, status, updated_at, display_name, summary_txt)
+                            VALUES (:k, :s, :u, :dn, :st)
+                            ON CONFLICT (feature_key) DO NOTHING
+                        """),
+                        {"k": fk, "s": st_val, "u": now_iso, "dn": d_name, "st": s_txt},
                     )
     except Exception:
         pass
@@ -1533,40 +1627,57 @@ def get_global_feature_statuses(force_refresh: bool = False) -> Dict[str, str]:
     return statuses
 
 
+def is_feature_enabled_for_user(feature_key: str, email: str) -> bool:
+    """Admin always has access; regular users are blocked if status == 'admin_only'."""
+    if is_admin_user(email):
+        return True
+    return get_global_feature_statuses().get(feature_key, "released") != "admin_only"
+
+
 def is_feature_in_beta(feature_key: str) -> bool:
     return get_global_feature_statuses().get(feature_key, "released") == "beta"
 
 
-def promote_feature_to_public(feature_key: str) -> None:
+def set_feature_status(
+    feature_key: str,
+    new_status: str,
+    display_name: str = "",
+    summary_txt: str = "",
+) -> None:
+    if new_status not in ("released", "beta", "admin_only"):
+        return
     now_iso = get_local_now().isoformat()
+    meta = get_all_registered_features().get(feature_key, {})
+    d_name = display_name.strip() or meta.get("name", feature_key)
+    s_txt = summary_txt.strip() or meta.get("beta_summary", "")
     with engine.begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO feature_flags (feature_key, status, updated_at)
-                VALUES (:k, 'released', :u)
-                ON CONFLICT (feature_key) DO UPDATE SET status = 'released', updated_at = EXCLUDED.updated_at;
+                INSERT INTO feature_flags (feature_key, status, updated_at, display_name, summary_txt)
+                VALUES (:k, :s, :u, :dn, :st)
+                ON CONFLICT (feature_key) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    updated_at = EXCLUDED.updated_at,
+                    display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), feature_flags.display_name),
+                    summary_txt = COALESCE(NULLIF(EXCLUDED.summary_txt, ''), feature_flags.summary_txt);
             """),
-            {"k": feature_key, "u": now_iso},
+            {"k": feature_key, "s": new_status, "u": now_iso, "dn": d_name, "st": s_txt},
         )
     st.session_state.pop("_global_feature_statuses", None)
+    st.session_state.pop("_all_registered_features", None)
 
 
-def revert_feature_to_beta(feature_key: str) -> None:
-    now_iso = get_local_now().isoformat()
+def delete_custom_feature_flag(feature_key: str) -> None:
+    if feature_key in FEATURE_REGISTRY:
+        return
     with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO feature_flags (feature_key, status, updated_at)
-                VALUES (:k, 'beta', :u)
-                ON CONFLICT (feature_key) DO UPDATE SET status = 'beta', updated_at = EXCLUDED.updated_at;
-            """),
-            {"k": feature_key, "u": now_iso},
-        )
+        conn.execute(text("DELETE FROM feature_flags WHERE feature_key = :k"), {"k": feature_key})
     st.session_state.pop("_global_feature_statuses", None)
+    st.session_state.pop("_all_registered_features", None)
 
 
 def report_feature_error(feature_key: str, error_msg: str, traceback_txt: str, user_email: str) -> None:
-    meta = FEATURE_REGISTRY.get(feature_key, {})
+    meta = get_all_registered_features().get(feature_key, {})
     f_name = meta.get("name", feature_key)
     now_iso = get_local_now().isoformat()
     try:
@@ -1619,57 +1730,32 @@ def resolve_feature_error(error_id: str) -> None:
         pass
 
 
-def run_with_fallback(
-    feature_key: str,
-    primary_fn: Callable[[], Any],
-    fallback_fn: Callable[[], Any],
-    user_email: str,
-) -> Any:
-    try:
-        return primary_fn()
-    except Exception as exc:
-        err_msg = f"{type(exc).__name__}: {exc}"
-        tb_txt = traceback.format_exc()
-        report_feature_error(feature_key, err_msg, tb_txt, user_email)
-        if not is_admin_user(user_email):
-            st.info("🛡️ Standard backup mode active while we fine-tune the latest update.")
-        return fallback_fn()
-
-
 def render_feature_stage_header(feature_key: str, user_id: str, email: str) -> None:
-    meta = FEATURE_REGISTRY.get(feature_key)
+    meta = get_all_registered_features().get(feature_key)
     if not meta:
         return
-    in_beta = is_feature_in_beta(feature_key)
+    status_val = get_global_feature_statuses().get(feature_key, "released")
     f_name = meta.get("name", feature_key)
 
     if is_admin_user(email):
-        if in_beta:
+        if status_val == "admin_only":
             st.markdown(
-                f"<div class='admin-workbench-box'>"
-                f"<div style='font-weight:800; font-size:0.86rem; margin-bottom:2px;'>🛠️ Admin Beta Workbench — {f_name}</div>"
-                f"<div style='font-size:0.78rem;'>Regular users currently see the Beta Testing alert on this feature. You do not see user beta popups.</div>"
+                f"<div class='admin-hidden-box'>"
+                f"<div style='font-weight:800; font-size:0.84rem;'>🔒 Admin-Only Feature — {f_name}</div>"
+                f"<div style='font-size:0.77rem;'>Currently completely removed for all other users. Change its stage anytime in <b>Releases</b>.</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
-            ac1, ac2 = st.columns([2.2, 1.2])
-            with ac1:
-                if st.button("🚀 Promote to Public Release (End Beta)", key=f"promote_beta_{feature_key}", use_container_width=True):
-                    promote_feature_to_public(feature_key)
-                    st.success(f"🎉 '{f_name}' is now in Public Release! All users will receive the Public Release update alert.")
-                    safe_rerun("app")
-            with ac2:
-                if st.button("🧪 Test Fallback Alert", key=f"test_fb_{feature_key}", use_container_width=True):
-                    report_feature_error(feature_key, "SimulatedAdminFallbackTest: Manual health check triggered", "Manual test from Admin Beta Workbench", email)
-                    st.warning("Fallback alert logged! Check the red alert banner at the top of your dashboard.")
-        else:
-            with st.expander("🛠️ Admin Feature Status: Public Release (Live)", expanded=False):
-                st.caption(f"'{f_name}' is currently live for all users.")
-                if st.button("↩️ Revert Back to Beta Testing", key=f"revert_beta_{feature_key}"):
-                    revert_feature_to_beta(feature_key)
-                    safe_rerun("app")
+        elif status_val == "beta":
+            st.markdown(
+                f"<div class='admin-workbench-box'>"
+                f"<div style='font-weight:800; font-size:0.84rem;'>🛠️ Admin View (Beta Active for Users) — {f_name}</div>"
+                f"<div style='font-size:0.77rem;'>Regular users see the Beta Testing alert on this feature. Manage all release stages in <b>Releases</b>.</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
     else:
-        if in_beta:
+        if status_val == "beta":
             st.markdown(
                 f"<div class='beta-banner-box'>"
                 f"<div style='font-weight:800; font-size:0.86rem; margin-bottom:2px;'>🧪 Beta Feature (In Testing) — {f_name}</div>"
@@ -1839,10 +1925,9 @@ def clear_all_session_caches():
         "df_cached", "cfg_courses", "cfg_schedule", "cfg_prio_mode",
         "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
         "cfg_seen_updates", "cfg_seen_releases", "cfg_theme", "cfg_shs",
-        "cfg_ignored_sync", "_ai_plan_result", "_undo_slot_state",
-        "_hydrated_uid", "_pending_edit_aid", "_classroom_sync_preview",
-        "_classroom_auto_sync", "_sync_banner_msg", "_global_feature_statuses",
-        "_open_feedback_prefill",
+        "_ai_plan_result", "_undo_slot_state", "_hydrated_uid",
+        "_pending_edit_aid", "_global_feature_statuses",
+        "_all_registered_features", "_open_feedback_prefill",
     ]:
         st.session_state.pop(k, None)
 
@@ -1902,14 +1987,12 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     completed_slots: Dict[str, Dict[str, Any]] = {}
     seen_updates_ver: str = ""
     seen_releases: List[str] = []
-    ignored_sync: List[str] = []
     theme_cfg: Dict[str, Any] = dict(DEFAULT_THEME_CONFIG)
     shs_cfg: Dict[str, Any] = {
         "lunches": {"A": "L2", "B": "L2", "C": "L2", "D": "L2", "X": "L2"},
         "periods": {str(i): "" for i in range(1, 9)},
         "study_rooms": {"A": "", "B": "", "C": "", "D": "", "X": ""},
         "sheet_url": "",
-        "app_url": "",
     }
 
     assignment_rows: List[Dict[str, Any]] = []
@@ -1962,13 +2045,6 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
                     seen_releases = [str(x) for x in parsed]
             except Exception:
                 pass
-        elif r_title == "__SYSTEM_IGNORED_SYNC__":
-            try:
-                parsed = json.loads(str(r_notes or "[]"))
-                if isinstance(parsed, list):
-                    ignored_sync = [str(x).strip().lower() for x in parsed if str(x).strip()]
-            except Exception:
-                pass
         elif r_title == "__SYSTEM_THEME_CONFIG__":
             try:
                 parsed = json.loads(str(r_notes or "{}"))
@@ -2018,7 +2094,6 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
     st.session_state["cfg_completed_slots_date"] = today_iso
     st.session_state["cfg_seen_updates"] = seen_updates_ver
     st.session_state["cfg_seen_releases"] = seen_releases
-    st.session_state["cfg_ignored_sync"] = ignored_sync
     st.session_state["cfg_theme"] = theme_cfg
     st.session_state["cfg_shs"] = shs_cfg
     st.session_state["_hydrated_uid"] = user_id
@@ -2035,17 +2110,6 @@ def get_courses_cached(user_id: str) -> List[str]:
 def _write_courses_file(user_id: str, courses: List[str]) -> None:
     st.session_state["cfg_courses"] = courses
     _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_courses_config", user_id), user_id, "__SYSTEM_COURSES__", json.dumps(courses), get_local_now().isoformat())
-
-
-def get_ignored_sync_cached(user_id: str) -> List[str]:
-    hydrate_user_session(user_id)
-    return st.session_state.get("cfg_ignored_sync", [])
-
-
-def _write_ignored_sync(user_id: str, ignored_titles: List[str]) -> None:
-    cleaned = list(dict.fromkeys([str(x).strip().lower() for x in ignored_titles if str(x).strip()]))[-80:]
-    st.session_state["cfg_ignored_sync"] = cleaned
-    _run_bg_sql(_db_upsert_config_worker, _cfg_uuid("user_ignored_sync_config", user_id), user_id, "__SYSTEM_IGNORED_SYNC__", json.dumps(cleaned), get_local_now().isoformat())
 
 
 def get_schedule_cached(user_id: str) -> List[Dict[str, Any]]:
@@ -2112,7 +2176,6 @@ def get_shs_cached(user_id: str) -> Dict[str, Any]:
             "periods": {str(i): "" for i in range(1, 9)},
             "study_rooms": dict(default_rooms),
             "sheet_url": "",
-            "app_url": "",
         },
     )
     if "lunches" not in cfg:
@@ -2122,8 +2185,6 @@ def get_shs_cached(user_id: str) -> Dict[str, Any]:
         cfg["study_rooms"] = dict(default_rooms)
     if "sheet_url" not in cfg:
         cfg["sheet_url"] = ""
-    if "app_url" not in cfg:
-        cfg["app_url"] = ""
     return cfg
 
 
@@ -2207,18 +2268,6 @@ def upsert_assignments(rows_to_upsert: List[Dict[str, Any]]) -> None:
 def delete_assignment(assignment_id: str) -> None:
     if "df_cached" in st.session_state and not st.session_state["df_cached"].empty:
         df = st.session_state["df_cached"]
-        matches = df[df["id"] == assignment_id]
-        if not matches.empty:
-            rec = matches.iloc[0]
-            note_low = str(rec.get("notes") or "").lower()
-            if "classroom" in note_low:
-                uid = str(rec.get("user_id") or "")
-                t_low = str(rec.get("title") or "").strip().lower()
-                if uid and t_low:
-                    ign = list(get_ignored_sync_cached(uid))
-                    if t_low not in ign:
-                        ign.append(t_low)
-                        _write_ignored_sync(uid, ign)
         st.session_state["df_cached"] = df[df["id"] != assignment_id].reset_index(drop=True)
     st.session_state.pop("_ai_plan_result", None)
     _run_bg_sql(_db_delete_assignment_worker, assignment_id)
@@ -2638,17 +2687,101 @@ def render_terminal_auth_page():
                         if "error" in res:
                             st.error(f"Sign in failed: {res['error']}")
                         else:
-                            pending_preview = st.session_state.get("_classroom_sync_preview")
-                            pending_auto = st.session_state.get("_classroom_auto_sync")
                             clear_all_session_caches()
-                            if pending_preview:
-                                st.session_state["_classroom_sync_preview"] = pending_preview
-                            if pending_auto:
-                                st.session_state["_classroom_auto_sync"] = pending_auto
                             st.session_state.user = res["data"]
                             hydrate_user_session(res["data"]["id"], force=True)
                             auth_container.empty()
                             safe_rerun("app")
+
+
+# -----------------------
+# Admin Feature Release & Visibility Control Panel
+# -----------------------
+def render_feature_release_controls(email: str, key_prefix: str = "panel_") -> None:
+    if not is_admin_user(email):
+        st.error("Admin access only.")
+        return
+
+    st.caption(
+        "Control which features are in **Public Release**, **Beta Release** (users see a testing alert), "
+        "or **Admin Only** (completely removed for everyone except you)."
+    )
+
+    all_feats = get_all_registered_features()
+    statuses = get_global_feature_statuses()
+    stage_keys = ["released", "beta", "admin_only"]
+
+    for fk, meta in all_feats.items():
+        cur_st = statuses.get(fk, meta.get("default_status", "released"))
+        if cur_st not in stage_keys:
+            cur_st = "released"
+        f_name = meta.get("name", fk)
+        loc_hint = meta.get("location_hint", "")
+        is_custom = (meta.get("is_custom") == "1")
+
+        if cur_st == "released":
+            badge_html = "<span class='update-ver-badge'>PUBLIC RELEASE</span>"
+        elif cur_st == "beta":
+            badge_html = "<span class='update-beta-badge'>BETA RELEASE</span>"
+        else:
+            badge_html = "<span class='update-hidden-badge'>ADMIN ONLY (HIDDEN)</span>"
+
+        st.markdown(
+            f"<div class='update-card'>"
+            f"<div style='margin-bottom:4px;'>{badge_html} <b>{f_name}</b> <span class='slot-meta-text'>({fk})</span></div>"
+            f"<div class='card-note-text'>{meta.get('beta_summary', '')} {f'• <i>{loc_hint}</i>' if loc_hint else ''}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        col_sel, col_btn = st.columns([3.2, 1.1])
+        with col_sel:
+            new_st = st.selectbox(
+                f"Release Stage for {f_name}",
+                options=stage_keys,
+                index=stage_keys.index(cur_st),
+                format_func=lambda x: FEATURE_STAGE_LABELS[x],
+                key=f"{key_prefix}stage_sel_{fk}",
+                label_visibility="collapsed",
+            )
+        with col_btn:
+            if is_custom:
+                if st.button("Delete", key=f"{key_prefix}del_custom_{fk}", use_container_width=True):
+                    delete_custom_feature_flag(fk)
+                    safe_rerun("app")
+            else:
+                st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+
+        if new_st != cur_st:
+            set_feature_status(fk, new_st)
+            st.toast(f"Updated '{f_name}' → {FEATURE_STAGE_LABELS[new_st]}")
+            safe_rerun("app")
+
+    st.markdown("---")
+    with st.expander("➕ Register a New Custom Feature Flag", expanded=False):
+        with st.form(f"{key_prefix}new_custom_flag_form", clear_on_submit=True):
+            c_key = st.text_input("Feature Key (no spaces)", placeholder="e.g., gpa_calculator")
+            c_name = st.text_input("Display Name", placeholder="e.g., GPA & Grade Calculator")
+            c_desc = st.text_input("Short Description", placeholder="Calculates weighted & unweighted SHS GPA.")
+            c_stage = st.selectbox(
+                "Initial Stage",
+                options=stage_keys,
+                index=2,
+                format_func=lambda x: FEATURE_STAGE_LABELS[x],
+            )
+            if st.form_submit_button("Create Feature Flag", use_container_width=True):
+                clean_k = re.sub(r"[^a-z0-9_]", "_", c_key.strip().lower()).strip("_")
+                if not clean_k or not c_name.strip():
+                    st.error("Please enter both a feature key and display name.")
+                else:
+                    set_feature_status(clean_k, c_stage, display_name=c_name.strip(), summary_txt=c_desc.strip())
+                    st.success(f"Created feature flag '{c_name.strip()}'!")
+                    safe_rerun("app")
+
+
+@dialog_decorator("🚀 Feature Release & Visibility Panel")
+def show_feature_release_panel_dialog(email: str):
+    render_feature_release_controls(email, key_prefix="modal_")
 
 
 # -----------------------
@@ -2662,7 +2795,8 @@ def _valid_hex(val: Any, fallback: str) -> str:
 
 
 @dialog_decorator("🎨 Theme & Appearance Studio")
-def show_theme_dialog(user_id: str):
+def show_theme_dialog(user_id: str, email: str):
+    render_feature_stage_header("theme_studio", user_id, email)
     cur = {**DEFAULT_THEME_CONFIG, **get_theme_cached(user_id)}
     preset_names = list(THEME_PRESETS.keys())
     cur_preset = cur.get("preset") if cur.get("preset") in preset_names else preset_names[0]
@@ -2758,9 +2892,10 @@ def show_theme_dialog(user_id: str):
 
 @dialog_decorator("🎉 New Feature Now in Public Release!")
 def show_public_release_dialog(user_id: str, newly_released_keys: List[str]):
-    st.caption("A feature you may have seen in Beta testing has officially graduated to full Public Release!")
+    st.caption("A feature has officially graduated to full Public Release!")
+    all_feats = get_all_registered_features()
     for fk in newly_released_keys:
-        meta = FEATURE_REGISTRY.get(fk, {})
+        meta = all_feats.get(fk, {})
         st.markdown(
             f"<div class='update-card'>"
             f"<div style='margin-bottom:5px;'><span class='update-ver-badge'>PUBLIC RELEASE</span> <b>{meta.get('name', fk)}</b></div>"
@@ -2779,11 +2914,12 @@ def show_public_release_dialog(user_id: str, newly_released_keys: List[str]):
 def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
     st.caption("What's new, active Beta features, changelog history, and quick tips.")
 
+    all_feats = get_all_registered_features()
     statuses = get_global_feature_statuses()
     active_betas = [
-        (fk, FEATURE_REGISTRY[fk])
+        (fk, all_feats[fk])
         for fk, st_val in statuses.items()
-        if st_val == "beta" and fk in FEATURE_REGISTRY
+        if st_val == "beta" and fk in all_feats
     ]
 
     if active_betas and not is_admin_user(email):
@@ -2802,15 +2938,9 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.9 NEW</span> <b>Auto-Expand Full Classroom To-Do & Club Routing</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.9 NEW</span> <b>Streamlined Dashboard & Feature Release Controls</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    The Classroom bookmarklet now automatically expands collapsed sections (<i>No due date</i>, <i>This week</i>, <i>Next week</i>, <i>Later</i>), imports forms/materials/club announcements into the <b>Other</b> tab, and fixes dates on <i>Posted</i> and <i>Sunday, Dec 6</i> items. <b>Re-copy the bookmarklet once from Sync!</b>
-                </div>
-            </div>
-            <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.8</span> <b>Classroom Instruction Fetch, Smart Stability Guard & Two-Way Feedback</b></div>
-                <div style='font-size:0.83rem; line-height:1.45;'>
-                    Pulls teacher instructions into task notes, maps <i>Español</i> to <b>SPANISH</b>, keeps <i>(on paper)</i> tasks as <b>Homework</b>, and lets you view replies to your feedback!
+                    Cleaned up the toolbar for faster task management, upgraded the Beta & Public Release rollout engine, and kept two-way creator feedback threads front and center.
                 </div>
             </div>
             <div class='update-card'>
@@ -2852,8 +2982,8 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='tip-card'>
-                <b>1. 1-Click Classroom Bookmarklet:</b><br/>
-                Save the bookmarklet from the <b>Sync</b> button to your bookmarks bar. Clicking it from any website opens Classroom To-do; clicking it on Classroom auto-expands all sections and imports everything.
+                <b>1. Quick Task Entry & Course Filtering:</b><br/>
+                Use <b>+ Task</b> in the top bar to log assignments, tests, essays, or presentations with custom due dates and time estimates.
             </div>
             <div class='tip-card'>
                 <b>2. Personalize Your SHS Bell Schedule:</b><br/>
@@ -2928,13 +3058,13 @@ def show_feedback_dialog(user_id: str, email: str, prefill_cat: str = ""):
                                 safe_rerun("app")
 
 
-@dialog_decorator("📬 Admin Feedback Inbox & System Health")
+@dialog_decorator("📬 Admin Inbox, Releases & System Health")
 def show_admin_feedback_inbox_dialog(user_id: str, email: str):
     if not is_admin_user(email):
         st.error("Admin access only.")
         return
 
-    tab_inbox, tab_health = st.tabs(["💬 User Feedback & Messages", "🛡️ Feature Health & Fallbacks"])
+    tab_inbox, tab_releases, tab_health = st.tabs(["💬 User Feedback", "🚀 Feature Releases", "🛡️ System Health"])
 
     with tab_inbox:
         c_filt, c_mark = st.columns([2, 1.3])
@@ -2989,11 +3119,14 @@ def show_admin_feedback_inbox_dialog(user_id: str, email: str):
                                 mark_feedback_threads_read(user_id, email, feedback_id=fid)
                                 safe_rerun("app")
 
+    with tab_releases:
+        render_feature_release_controls(email, key_prefix="inbox_tab_")
+
     with tab_health:
-        st.caption("Automatic fallback status and error alerts across all Beta and live features.")
+        st.caption("Automatic error alerts across all Beta and live features.")
         errs = get_unresolved_feature_errors()
         if not errs:
-            st.success("✅ All features healthy — zero fallback triggers reported.")
+            st.success("✅ All features healthy — zero errors reported.")
         else:
             for er in errs:
                 eid = str(er["id"])
@@ -3024,7 +3157,8 @@ def show_welcome_courses_dialog(user_id: str):
 
 
 @dialog_decorator("Choose Your Priority System")
-def show_prio_config_dialog(user_id: str):
+def show_prio_config_dialog(user_id: str, email: str):
+    render_feature_stage_header("custom_priority_scales", user_id, email)
     st.markdown("### How would you like to view & set task priorities?")
     current_mode = get_prio_cached(user_id) or "Low / Medium / High"
     prio_choice = st.radio("Select System Preference:", PRIORITY_SYSTEM_MODES, index=PRIORITY_SYSTEM_MODES.index(current_mode) if current_mode in PRIORITY_SYSTEM_MODES else 0, key="prio_modal_radio")
@@ -3163,526 +3297,6 @@ def show_manage_courses_dialog(user_id: str):
 
 
 # -----------------------
-# Google Classroom Bookmarklet & Paste Sync Engine (v3.9 Full To-Do)
-# -----------------------
-CLUB_ACTIVITY_KEYWORDS = [
-    "club", "league", "robotics", "deca", "counseling", "market", "trojan",
-    "aviation", "council", "nhs", "national honor", "band", "choir",
-    "orchestra", "athletics", "team", "class of 20", "announcements",
-    "neml", "connect", "koski",
-]
-
-
-def _detect_live_app_url(saved_url: str = "") -> str:
-    clean_saved = str(saved_url or "").strip().rstrip("/")
-    if clean_saved:
-        return clean_saved
-    try:
-        ctx = getattr(st, "context", None)
-        if ctx and hasattr(ctx, "headers"):
-            host = str(ctx.headers.get("Host", "")).strip()
-            proto = str(ctx.headers.get("X-Forwarded-Proto", "https")).strip() or "https"
-            if host and "localhost" not in host and "127.0.0.1" not in host:
-                return f"{proto}://{host}"
-    except Exception:
-        pass
-    return ""
-
-
-def _is_club_or_activity(raw_course: str, user_courses: List[str]) -> bool:
-    rc_low = str(raw_course or "").strip().lower()
-    if not rc_low:
-        return False
-    # If the user explicitly created a course matching it, treat it as a class
-    for c in user_courses:
-        c_low = c.strip().lower()
-        if c_low and c_low != "other" and c_low == rc_low:
-            return False
-    return any(kw in rc_low for kw in CLUB_ACTIVITY_KEYWORDS)
-
-
-def _infer_classroom_atype(title: str, raw_course: str = "", user_courses: Optional[List[str]] = None) -> str:
-    if _is_club_or_activity(raw_course, user_courses or []):
-        return "Other"
-    t = str(title or "").lower()
-    if any(k in t for k in ["test", "quiz", "exam", "midterm", "final", "assessment"]):
-        return "Test & Quizzes"
-    if re.search(r"\b(essay|research paper|term paper|dbq|frq|rough draft|final draft)\b", t):
-        return "Essay"
-    if any(k in t for k in ["presentation", "slides", "slideshow", "poster", "speech"]):
-        return "Presentation"
-    if any(k in t for k in ["volunteer", "sponsorship", "permission", "syllabus", "sign up", "registration", "bake sale"]):
-        return "Other"
-    return "Homework"
-
-
-def _match_classroom_course(raw_course: str, user_courses: List[str]) -> str:
-    rc = str(raw_course or "").strip()
-    if not rc:
-        return "GENERAL"
-    rc_up = rc.upper()
-
-    # Keep clean club names (e.g. FIRST ROBOTICS, DECA, MATH LEAGUE) instead of matching "Math league" -> "MATH"
-    if _is_club_or_activity(rc, user_courses):
-        cleaned_club = re.split(r"[:–—|•(]", rc_up)[0].strip()
-        return cleaned_club[:24] if cleaned_club else "OTHER"
-
-    for c in user_courses:
-        c_up = c.strip().upper()
-        if c_up and c_up != "OTHER" and (c_up == rc_up or c_up in rc_up or rc_up in c_up):
-            return c_up
-    keyword_map = {
-        "MATH": ["ALGEBRA", "GEOMETRY", "CALCULUS", "PRECALC", "STATISTICS", "MATH"],
-        "SCIENCE": ["BIOLOGY", "CHEMISTRY", "PHYSICS", "ENVIRONMENTAL", "ANATOMY", "SCIENCE"],
-        "ENGLISH": ["ENGLISH", "LITERATURE", "WRITING", "LANG", "COMPOSITION", "HUMANITIES"],
-        "HISTORY": ["HISTORY", "WORLD", "APUSH", "GOVERNMENT", "CIVICS", "ECONOMICS", "PSYCHOLOGY"],
-        "SPANISH": ["ESPAÑOL", "ESPANOL", "SPANISH"],
-        "FRENCH": ["FRANÇAIS", "FRANCAIS", "FRENCH"],
-    }
-    for user_c in user_courses:
-        u_up = user_c.strip().upper()
-        for bucket, kws in keyword_map.items():
-            if bucket in u_up and any(k in rc_up for k in kws):
-                return u_up
-    cleaned = re.split(r"[-–—|•(]", rc_up)[0].strip()
-    return cleaned[:24] if cleaned else "GENERAL"
-
-
-def _title_tokens(title: str) -> List[str]:
-    stopwords = {
-        "the", "a", "an", "of", "for", "to", "in", "on", "and", "all",
-        "before", "class", "take", "paper", "complete", "finish", "do",
-    }
-    cleaned = re.sub(r"[^a-z0-9\s]", " ", str(title or "").lower().replace("&", " and "))
-    tokens: List[str] = []
-    for w in cleaned.split():
-        if w in stopwords:
-            continue
-        if len(w) > 3 and w.endswith("s"):
-            w = w[:-1]
-        tokens.append(w)
-    return tokens
-
-
-def _is_duplicate_task(
-    new_title: str,
-    new_course: str,
-    new_due: str,
-    existing_records: List[Dict[str, str]],
-) -> bool:
-    nt_low = new_title.strip().lower()
-    if not nt_low:
-        return True
-    new_toks = _title_tokens(new_title)
-    for rec in existing_records:
-        ex_title = rec.get("title", "").strip()
-        if ex_title.lower() == nt_low:
-            return True
-        same_course = (rec.get("course", "").upper() == new_course.upper())
-        ex_due = rec.get("due_date", "")
-        same_or_open_due = (not ex_due or not new_due or ex_due == new_due)
-        if same_course and same_or_open_due and new_toks:
-            ex_toks = _title_tokens(ex_title)
-            if not ex_toks:
-                continue
-            matches = 0
-            for t1 in new_toks:
-                if any(t1 == t2 or (len(t1) >= 4 and len(t2) >= 4 and (t1.startswith(t2) or t2.startswith(t1))) for t2 in ex_toks):
-                    matches += 1
-            min_len = min(len(new_toks), len(ex_toks))
-            if matches >= 2 and (matches / max(1, min_len)) >= 0.6:
-                return True
-    return False
-
-
-def _parse_classroom_due_date(raw_due: str) -> str:
-    s = str(raw_due or "").strip()
-    low = s.lower()
-    # "Posted Tuesday, Nov 10" is a creation timestamp on "No due date" items, NOT a due date!
-    if not s or "no due date" in low or low.startswith("posted"):
-        return ""
-
-    today = get_local_now().date()
-    if "today" in low:
-        return today.isoformat()
-    if "tomorrow" in low:
-        return (today + timedelta(days=1)).isoformat()
-    if "yesterday" in low:
-        return (today - timedelta(days=1)).isoformat()
-
-    # Strip leading "Due ", leading weekday ("Sunday, Dec 6" -> "Dec 6"), and trailing time (", 11:59 PM")
-    s_clean = re.sub(r"^due\s+", "", s, flags=re.I)
-    s_clean = re.sub(
-        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+",
-        "",
-        s_clean,
-        flags=re.I,
-    )
-    s_clean = re.sub(r",?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?$", "", s_clean, flags=re.I).strip()
-
-    # 1. Try explicit Month/Day or Full Date FIRST (so "Sunday, Dec 6" parses as Dec 6, not Sunday!)
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s_clean, fmt).date().isoformat()
-        except ValueError:
-            pass
-    for fmt_no_yr in ("%b %d", "%B %d", "%m/%d"):
-        try:
-            parsed = datetime.strptime(s_clean, fmt_no_yr)
-            yr = today.year + 1 if (today.month >= 11 and parsed.month <= 2) else today.year
-            return date(yr, parsed.month, parsed.day).isoformat()
-        except ValueError:
-            pass
-
-    # 2. Fallback to standalone weekday name (e.g. "Tuesday, 11:59 PM")
-    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    for idx_d, d_name in enumerate(day_names):
-        if re.search(rf"\b{d_name}\b", low):
-            diff = (idx_d - today.weekday()) % 7
-            return (today + timedelta(days=diff)).isoformat()
-
-    return ""
-
-
-def _decode_classroom_sync_payload(sync_b64: str) -> List[Dict[str, str]]:
-    if not sync_b64:
-        return []
-    try:
-        padded = sync_b64 + "=" * (-len(sync_b64) % 4)
-        raw_json = base64.b64decode(padded).decode("utf-8", errors="replace")
-        data = json.loads(raw_json)
-        if not isinstance(data, list):
-            return []
-        out = []
-        for item in data:
-            if isinstance(item, dict) and item.get("t"):
-                out.append({
-                    "title": str(item.get("t", "")).strip(),
-                    "raw_course": str(item.get("c", "")).strip(),
-                    "raw_due": str(item.get("d", "")).strip(),
-                    "details": str(item.get("n", "")).strip(),
-                })
-        return out
-    except Exception:
-        return []
-
-
-def _parse_classroom_pasted_text(raw_text: str) -> List[Dict[str, str]]:
-    skip_exact = {
-        "to-do", "to do", "assigned", "missing", "done", "all classes",
-        "no due date", "this week", "next week", "later", "earlier",
-        "last week", "assignment", "quiz", "description", "more_vert",
-        "work with a due date", "work without a due date",
-    }
-    date_line_re = re.compile(
-        r"^(due\s+|posted\s+|today|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-        r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}/\d{1,2})",
-        re.I,
-    )
-    lines = [
-        ln.strip()
-        for ln in str(raw_text or "").splitlines()
-        if ln.strip() and ln.strip().lower() not in skip_exact and not ln.strip().isdigit()
-    ]
-    items: List[Dict[str, str]] = []
-    i = 0
-    while i + 1 < len(lines):
-        t_cand = lines[i]
-        c_cand = lines[i + 1]
-        if date_line_re.match(t_cand):
-            i += 1
-            continue
-        d_cand = ""
-        step = 2
-        if i + 2 < len(lines) and date_line_re.match(lines[i + 2]):
-            d_cand = lines[i + 2]
-            step = 3
-        items.append({"title": t_cand, "raw_course": c_cand, "raw_due": d_cand, "details": ""})
-        i += step
-    return items
-
-
-def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
-    clean_url = str(app_url or "").strip().rstrip("/") or "https://YOUR-APP.streamlit.app"
-    auto_suffix = "&auto=1" if auto_import else ""
-    return (
-        "javascript:(function(){try{"
-        "if(!location.hostname.includes('classroom.google.com')){"
-        "location.href='https://classroom.google.com/a/not-turned-in/all';return;}"
-        "var root=document.querySelector('[role=\"main\"]')||document.body;"
-        "root.querySelectorAll('[aria-expanded=\"false\"]').forEach(function(b){try{b.click();}catch(e){}});"
-        "setTimeout(function(){"
-        "var rows=[],seen={},skip=/^(assignment|quiz|question|material|description|more_vert|event|expand_more|expand_less)$/i;"
-        "root.querySelectorAll('a[href*=\"/c/\"]').forEach(function(a){"
-        "var h=a.getAttribute('href')||'';"
-        "if(h.includes('/not-turned-in')||h.includes('/missing')||h.includes('/done'))return;"
-        "var row=a.closest('li,[role=\"listitem\"]')||a;"
-        "var lines=(row.innerText||a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
-        "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
-        "if(!seen[k]&&t.length>1){seen[k]=1;rows.push({t:t,c:c,d:d,href:a.href});}}});"
-        "if(!rows.length){alert('Open your Google Classroom To-do list first, then click Sync to Tracker again!');return;}"
-        "var fetchWithTimeout=function(url){"
-        "return Promise.race(["
-        "fetch(url,{credentials:'include'}).then(function(r){return r.text();}),"
-        "new Promise(function(_,rej){setTimeout(function(){rej('timeout');},1800);})"
-        "]);};"
-        "Promise.all(rows.map(function(it){"
-        "return fetchWithTimeout(it.href).then(function(html){"
-        "var desc='',idx=html.indexOf(JSON.stringify(it.t));"
-        "if(idx>-1){var chunk=html.slice(idx+it.t.length+2,idx+2500),es=chunk.indexOf('</script>');"
-        "if(es>-1)chunk=chunk.slice(0,es);"
-        "var strs=chunk.match(/\"((?:\\\\.|[^\"\\\\]){8,500})\"/g)||[];"
-        "for(var i=0;i<strs.length;i++){try{var v=JSON.parse(strs[i]).replace(/<[^>]+>/g,' ').replace(/\\s+/g,' ').trim();"
-        "if(v&&v!==it.t&&v!==it.c&&!/^https?:\\/\\//i.test(v)&&!/^(drive|docs|forms|classroom|google)/i.test(v)&&/\\s/.test(v)){desc=v.slice(0,220);break;}}catch(e){}}}"
-        "return {t:it.t,c:it.c,d:it.d,n:desc};"
-        "}).catch(function(){return {t:it.t,c:it.c,d:it.d,n:''};});"
-        "})).then(function(items){"
-        "var payload=btoa(unescape(encodeURIComponent(JSON.stringify(items))));"
-        f"location.href='{clean_url}/?sync='+encodeURIComponent(payload)+'{auto_suffix}';"
-        "});"
-        "},450);"
-        "}catch(e){alert('Bookmarklet error: '+e.message);}})();"
-    )
-
-
-def _get_existing_task_signatures(df_existing: pd.DataFrame) -> List[Dict[str, str]]:
-    if df_existing.empty:
-        return []
-    sigs: List[Dict[str, str]] = []
-    for _, r in df_existing.iterrows():
-        sigs.append({
-            "title": str(r.get("title") or ""),
-            "course": str(r.get("course") or "").upper(),
-            "due_date": str(r.get("due_date") or ""),
-        })
-    return sigs
-
-
-def _format_synced_note(details: str, raw_course: str) -> str:
-    d_clean = str(details or "").strip()
-    c_clean = str(raw_course or "").strip()
-    if d_clean and c_clean:
-        return f"{d_clean} (Classroom: {c_clean})"
-    if d_clean:
-        return d_clean
-    return f"Synced from Google Classroom ({c_clean})".strip()
-
-
-def process_auto_classroom_sync(user_id: str, email: str, incoming_items: List[Dict[str, str]]) -> str:
-    def _primary():
-        if not incoming_items:
-            return ""
-        user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-        existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
-        ignored_set = set(get_ignored_sync_cached(user_id))
-
-        to_add: List[Dict[str, Any]] = []
-        skipped_dups = 0
-        skipped_ignored = 0
-        for item in incoming_items:
-            t_clean = str(item.get("title", "")).strip()
-            raw_c = str(item.get("raw_course", "")).strip()
-            if not t_clean:
-                continue
-            if t_clean.lower() in ignored_set:
-                skipped_ignored += 1
-                continue
-            mapped_c = _match_classroom_course(raw_c, user_courses)
-            parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-            if _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs):
-                skipped_dups += 1
-                continue
-            details_txt = str(item.get("details", "")).strip()
-            existing_sigs.append({"title": t_clean, "course": mapped_c, "due_date": parsed_due})
-            to_add.append({
-                "id": str(uuid.uuid4()),
-                "user_id": user_id,
-                "title": t_clean,
-                "course": mapped_c,
-                "due_date": parsed_due,
-                "status": "Not Started",
-                "priority": priority_to_int("Medium"),
-                "atype": _infer_classroom_atype(f"{t_clean} {details_txt}", raw_c, user_courses),
-                "eta": "",
-                "notes": _format_synced_note(details_txt, raw_c),
-                "created_at": get_local_now().isoformat(),
-                "prev_status": "Not Started",
-            })
-
-        notes_parts = []
-        if skipped_dups:
-            notes_parts.append(f"{skipped_dups} already tracked")
-        if skipped_ignored:
-            notes_parts.append(f"{skipped_ignored} previously deleted — click Sync to restore")
-        extra_str = f" ({', '.join(notes_parts)})" if notes_parts else ""
-
-        if to_add:
-            upsert_assignments(to_add)
-            return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{extra_str}"
-        return f"✅ Google Classroom checked ({len(incoming_items)} found) — no new items to add{extra_str}."
-
-    def _fallback():
-        return "⚠️ Classroom auto-sync switched to manual backup mode. Open Sync → Quick Paste Backup to import."
-
-    return run_with_fallback("classroom_sync_v2", _primary, _fallback, email)
-
-
-def _render_classroom_sync_v1_fallback(user_id: str):
-    user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-    st.caption("Open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
-    pasted_blob = st.text_area("Paste Classroom To-do Page Text Here", height=150, key="classroom_paste_fallback_area")
-    if st.button("Import Pasted Assignments", key="parse_pasted_fallback_btn", use_container_width=True):
-        parsed_items = _parse_classroom_pasted_text(pasted_blob)
-        if not parsed_items:
-            st.error("Could not detect assignments from that text.")
-        else:
-            to_add = []
-            for item in parsed_items:
-                raw_c = item.get("raw_course", "")
-                mapped_c = _match_classroom_course(raw_c, user_courses)
-                parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-                to_add.append({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "title": item["title"],
-                    "course": mapped_c,
-                    "due_date": parsed_due,
-                    "status": "Not Started",
-                    "priority": priority_to_int("Medium"),
-                    "atype": _infer_classroom_atype(item["title"], raw_c, user_courses),
-                    "eta": "",
-                    "notes": f"Synced from Google Classroom ({raw_c})",
-                    "created_at": get_local_now().isoformat(),
-                    "prev_status": "Not Started",
-                })
-            upsert_assignments(to_add)
-            safe_rerun("app")
-
-
-def _render_classroom_sync_v2_body(user_id: str, email: str, user_prio_mode: str):
-    render_feature_stage_header("classroom_sync_v2", user_id, email)
-
-    shs_cfg = get_shs_cached(user_id)
-    user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
-    existing_sigs = _get_existing_task_signatures(get_assignments_cached(user_id))
-    ignored_set = set(get_ignored_sync_cached(user_id))
-
-    incoming_items = st.session_state.get("_classroom_sync_preview", [])
-
-    if incoming_items:
-        st.success(f"Found {len(incoming_items)} item(s) from Google Classroom! Uncheck any you want to skip:")
-        default_prio = st.selectbox("Default Priority for Imported Tasks", PRIORITY_OPTIONS, index=1, key="sync_def_prio")
-        selected_to_import: List[Dict[str, Any]] = []
-
-        for idx, item in enumerate(incoming_items):
-            t_clean = item["title"]
-            raw_c = str(item.get("raw_course", "")).strip()
-            details_txt = str(item.get("details", "")).strip()
-            mapped_c = _match_classroom_course(raw_c, user_courses)
-            parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
-            inferred_type = _infer_classroom_atype(f"{t_clean} {details_txt}", raw_c, user_courses)
-            is_dup = (t_clean.lower() in ignored_set) or _is_duplicate_task(t_clean, mapped_c, parsed_due, existing_sigs)
-
-            due_lbl = f"Due {parsed_due}" if parsed_due else "No due date"
-            dup_lbl = " (Already in tracker / dismissed)" if is_dup else ""
-            detail_preview = f" — \"{details_txt[:70]}...\"" if len(details_txt) > 70 else (f" — \"{details_txt}\"" if details_txt else "")
-            checked = st.checkbox(
-                f"{t_clean} [{mapped_c} • {inferred_type} • {due_lbl}]{detail_preview}{dup_lbl}",
-                value=(not is_dup),
-                key=f"sync_chk_{idx}",
-            )
-            if checked:
-                selected_to_import.append({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "title": t_clean,
-                    "course": mapped_c,
-                    "due_date": parsed_due,
-                    "status": "Not Started",
-                    "priority": priority_to_int(default_prio),
-                    "atype": inferred_type,
-                    "eta": "",
-                    "notes": _format_synced_note(details_txt, raw_c),
-                    "created_at": get_local_now().isoformat(),
-                    "prev_status": "Not Started",
-                })
-
-        c_imp, c_clr = st.columns([2, 1])
-        with c_imp:
-            if st.button(f"Import {len(selected_to_import)} Selected Task(s)", key="confirm_classroom_import_btn", use_container_width=True):
-                if selected_to_import:
-                    upsert_assignments(selected_to_import)
-                st.session_state.pop("_classroom_sync_preview", None)
-                safe_rerun("app")
-        with c_clr:
-            if st.button("Discard", key="discard_classroom_import_btn", use_container_width=True):
-                st.session_state.pop("_classroom_sync_preview", None)
-                safe_rerun("app")
-        st.markdown("---")
-
-    tab_bm, tab_paste = st.tabs(["⚡ 1-Click Bookmarklet Setup", "📋 Quick Paste Backup"])
-
-    with tab_bm:
-        st.caption("Save this bookmarklet once to your bookmarks bar. Clicking it on Google Classroom auto-expands all To-do sections (No due date, This week, Later) and imports everything.")
-        detected_url = _detect_live_app_url(shs_cfg.get("app_url", ""))
-        app_url_input = st.text_input(
-            "1. Your Streamlit App URL (auto-detected)",
-            value=detected_url,
-            placeholder="https://your-app-name.streamlit.app",
-            key="classroom_app_url_input",
-        )
-        if app_url_input.strip() and app_url_input.strip().rstrip("/") != str(shs_cfg.get("app_url", "")).strip():
-            updated_cfg = dict(shs_cfg)
-            updated_cfg["app_url"] = app_url_input.strip().rstrip("/")
-            _write_shs_config(user_id, updated_cfg)
-
-        auto_mode_chk = st.checkbox(
-            "Instant Auto-Import (skip preview screen and import new tasks automatically)",
-            value=True,
-            key="classroom_auto_mode_chk",
-        )
-
-        bm_code = build_classroom_bookmarklet(app_url_input or detected_url, auto_import=auto_mode_chk)
-        st.markdown("**2. Copy this entire bookmarklet code (click the copy icon on the right):**")
-        st.code(bm_code, language="text")
-        st.markdown(
-            """
-            **3. How to save or update it:**
-            1. Press **Ctrl+Shift+B** (or **Cmd+Shift+B** on Mac) to show your bookmarks bar.
-            2. Right-click **`Sync to Tracker`** → **Edit...** (or right-click the bar → **Add Bookmark...**).
-            3. Paste the updated code above into the **URL** box and click **Save**.
-            4. Click **`Sync to Tracker`** from any website to jump to Classroom To-do, then click **`Sync to Tracker`** again to import all sections!
-            """
-        )
-        if ignored_set:
-            st.info(f"You have {len(ignored_set)} previously deleted Classroom item(s) hidden from auto-sync: {', '.join(sorted(ignored_set))}")
-            if st.button("Allow Previously Deleted Classroom Items to Re-Sync", key="reset_ignored_sync_btn"):
-                _write_ignored_sync(user_id, [])
-                st.success("Cleared! Click Sync to Tracker on Classroom to re-import them.")
-
-    with tab_paste:
-        st.caption("If your school Chromebook blocks bookmarklets, open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
-        pasted_blob = st.text_area("Paste Classroom To-do Page Text Here", height=140, key="classroom_paste_area")
-        if st.button("Scan Pasted Text", key="parse_pasted_classroom_btn", use_container_width=True):
-            parsed_items = _parse_classroom_pasted_text(pasted_blob)
-            if not parsed_items:
-                st.error("Could not detect assignments from that text. Make sure you copied the Google Classroom To-do page.")
-            else:
-                st.session_state["_classroom_sync_preview"] = parsed_items
-                safe_rerun("app")
-
-
-@dialog_decorator("📥 Sync Google Classroom")
-def show_classroom_sync_dialog(user_id: str, email: str, user_prio_mode: str):
-    run_with_fallback(
-        "classroom_sync_v2",
-        lambda: _render_classroom_sync_v2_body(user_id, email, user_prio_mode),
-        lambda: _render_classroom_sync_v1_fallback(user_id),
-        email,
-    )
-
-
-# -----------------------
 # Isolated @st.fragment Workspaces
 # -----------------------
 @fragment_decorator
@@ -3754,7 +3368,8 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
 
 
 @fragment_decorator
-def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
+def render_shs_bell_schedule_fragment(user_id: str, email: str, is_light: bool):
+    render_feature_stage_header("shs_bell_schedule", user_id, email)
     shs_cfg = get_shs_cached(user_id)
     now_local = get_local_now()
     today_date = now_local.date()
@@ -3952,15 +3567,20 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
 
 
 @fragment_decorator
-def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light: bool):
-    col_sched_side, col_ai_main = st.columns([1.15, 1.85])
-
+def render_schedule_and_ai_fragment(user_id: str, email: str, user_prio_mode: str, is_light: bool):
+    ai_enabled = is_feature_enabled_for_user("ai_study_planner", email)
     user_schedule = list(get_schedule_cached(user_id))
     stored_max_daily_work_dict = get_max_work_cached(user_id)
 
+    if ai_enabled:
+        col_sched_side, col_ai_main = st.columns([1.15, 1.85])
+    else:
+        col_sched_side = st.container()
+        col_ai_main = None
+
     with col_sched_side:
         st.markdown("<div class='section-heading'>Weekly Commitments</div>", unsafe_allow_html=True)
-        st.caption("Enter recurring busy blocks so the AI plans around them.")
+        st.caption("Enter recurring busy blocks" + (" so the AI plans around them." if ai_enabled else " to keep track of your week."))
 
         with st.form("add_schedule_event_form", clear_on_submit=True):
             s_day = st.selectbox("Day of Week", DAYS_OF_WEEK)
@@ -3991,90 +3611,93 @@ def render_schedule_and_ai_fragment(user_id: str, user_prio_mode: str, is_light:
                 with col_item_b:
                     st.button("Remove", key=f"del_sched_{b_id}", on_click=on_remove_schedule_block, args=(user_id, b_id), use_container_width=True)
 
-    with col_ai_main:
-        st.markdown("<div class='section-heading'>AI Daily Action Plan</div>", unsafe_allow_html=True)
-        st.caption("Optimized timeline across available days based on due dates & priority.")
+    if ai_enabled and col_ai_main is not None:
+        with col_ai_main:
+            render_feature_stage_header("ai_study_planner", user_id, email)
+            st.markdown("<div class='section-heading'>AI Daily Action Plan</div>", unsafe_allow_html=True)
+            st.caption("Optimized timeline across available days based on due dates & priority.")
 
-        undo_state = st.session_state.get("_undo_slot_state")
-        if undo_state:
-            if (get_local_now() - undo_state["time"]).total_seconds() < 15:
-                u_col1, u_col2 = st.columns([4.2, 1.2])
-                with u_col1:
-                    st.markdown(f"<div class='undo-toast-box'><span style='font-size:0.84rem;'>Finished <b>{undo_state['title']}</b> for today</span></div>", unsafe_allow_html=True)
-                with u_col2:
-                    st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True)
-            else:
-                st.session_state.pop("_undo_slot_state", None)
-
-        ctrl_col1, ctrl_col2 = st.columns([1.5, 1.2])
-        with ctrl_col1:
-            gen_plan_click = st.button("Re-Calculate Plan", key="btn_gen_ai_plan", use_container_width=True)
-        with ctrl_col2:
-            show_time_slots = st.toggle("Show Time Slots", value=True, key="toggle_show_time_slots")
-
-        with st.expander("⏱️ Customize Daily Work Limits (Per Day)", expanded=False):
-            st.caption("Set maximum allowed study/work time independently for each day of the week:")
-            opts = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 300]
-            day_cols = st.columns(7)
-            new_limits_dict = {}
-            for d_idx, d_name in enumerate(DAYS_OF_WEEK):
-                with day_cols[d_idx]:
-                    cur_val = stored_max_daily_work_dict.get(d_name, 60)
-                    new_limits_dict[d_name] = st.selectbox(d_name[:3], options=opts, index=opts.index(cur_val) if cur_val in opts else 4, key=f"p_limit_{d_name}", format_func=lambda x: f"{x}m")
-            if new_limits_dict != stored_max_daily_work_dict:
-                _write_max_work_config(user_id, new_limits_dict)
-                stored_max_daily_work_dict = new_limits_dict
-
-        cached_assignments = get_assignments_cached(user_id)
-        if gen_plan_click or "_ai_plan_result" not in st.session_state:
-            st.session_state["_ai_plan_result"] = generate_ai_study_plan(cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict)
-
-        plan_res = st.session_state["_ai_plan_result"]
-        status, plan = plan_res.get("status"), plan_res.get("plan", {})
-
-        if status == "no_tasks":
-            st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
-        elif status == "all_done":
-            st.success("All assignments marked completed!")
-        elif status == "success" and plan:
-            completed_set = set(get_completed_slots_cached(user_id).keys())
-            for day_name, day_data in plan.items():
-                if not isinstance(day_data, dict):
-                    continue
-                visible_slots = [s for s in day_data.get("slots", []) if s.get("slot_key") not in completed_set]
-                day_cap_mins = stored_max_daily_work_dict.get(day_name, 60)
-                scheduled_mins = sum(s.get("eta_mins", 0) for s in visible_slots)
-
-                st.markdown(
-                    f'<div class="ai-day-card"><div class="ai-day-header">'
-                    f'<span class="ai-day-title">{day_name}</span>'
-                    f'<div class="day-time-badge">{format_mins_to_hrs_mins(scheduled_mins)} scheduled <span class="time-max-cap">/ Max {format_mins_to_hrs_mins(day_cap_mins)}</span></div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-                if day_data.get("busy"):
-                    st.caption("Busy: " + ", ".join(day_data["busy"]))
-
-                if visible_slots:
-                    for idx_slot, s in enumerate(visible_slots):
-                        s_key = s.get("slot_key")
-                        slot_prio_str = format_priority_display(s.get("priority"), user_prio_mode)
-                        slot_dur_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
-                        c_chk, c_text = st.columns([0.45, 7.55])
-                        with c_chk:
-                            st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s.get("title"), s, user_id))
-                        with c_text:
-                            if show_time_slots:
-                                st.markdown(f"<div style='padding-top:3px;'><span class='slot-badge'>{s['time']}</span> &nbsp; {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
-                            else:
-                                st.markdown(f"<div style='padding-top:3px;'>• {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
+            undo_state = st.session_state.get("_undo_slot_state")
+            if undo_state:
+                if (get_local_now() - undo_state["time"]).total_seconds() < 15:
+                    u_col1, u_col2 = st.columns([4.2, 1.2])
+                    with u_col1:
+                        st.markdown(f"<div class='undo-toast-box'><span style='font-size:0.84rem;'>Finished <b>{undo_state['title']}</b> for today</span></div>", unsafe_allow_html=True)
+                    with u_col2:
+                        st.button("Undo", key="btn_undo_slot", on_click=on_undo_daily_slot, args=(user_id,), use_container_width=True)
                 else:
-                    st.caption("Free / No assignments scheduled")
-                st.markdown("</div>", unsafe_allow_html=True)
+                    st.session_state.pop("_undo_slot_state", None)
+
+            ctrl_col1, ctrl_col2 = st.columns([1.5, 1.2])
+            with ctrl_col1:
+                gen_plan_click = st.button("Re-Calculate Plan", key="btn_gen_ai_plan", use_container_width=True)
+            with ctrl_col2:
+                show_time_slots = st.toggle("Show Time Slots", value=True, key="toggle_show_time_slots")
+
+            with st.expander("⏱️ Customize Daily Work Limits (Per Day)", expanded=False):
+                st.caption("Set maximum allowed study/work time independently for each day of the week:")
+                opts = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 300]
+                day_cols = st.columns(7)
+                new_limits_dict = {}
+                for d_idx, d_name in enumerate(DAYS_OF_WEEK):
+                    with day_cols[d_idx]:
+                        cur_val = stored_max_daily_work_dict.get(d_name, 60)
+                        new_limits_dict[d_name] = st.selectbox(d_name[:3], options=opts, index=opts.index(cur_val) if cur_val in opts else 4, key=f"p_limit_{d_name}", format_func=lambda x: f"{x}m")
+                if new_limits_dict != stored_max_daily_work_dict:
+                    _write_max_work_config(user_id, new_limits_dict)
+                    stored_max_daily_work_dict = new_limits_dict
+
+            cached_assignments = get_assignments_cached(user_id)
+            if gen_plan_click or "_ai_plan_result" not in st.session_state:
+                st.session_state["_ai_plan_result"] = generate_ai_study_plan(cached_assignments, user_schedule, max_daily_mins_config=stored_max_daily_work_dict)
+
+            plan_res = st.session_state["_ai_plan_result"]
+            status, plan = plan_res.get("status"), plan_res.get("plan", {})
+
+            if status == "no_tasks":
+                st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
+            elif status == "all_done":
+                st.success("All assignments marked completed!")
+            elif status == "success" and plan:
+                completed_set = set(get_completed_slots_cached(user_id).keys())
+                for day_name, day_data in plan.items():
+                    if not isinstance(day_data, dict):
+                        continue
+                    visible_slots = [s for s in day_data.get("slots", []) if s.get("slot_key") not in completed_set]
+                    day_cap_mins = stored_max_daily_work_dict.get(day_name, 60)
+                    scheduled_mins = sum(s.get("eta_mins", 0) for s in visible_slots)
+
+                    st.markdown(
+                        f'<div class="ai-day-card"><div class="ai-day-header">'
+                        f'<span class="ai-day-title">{day_name}</span>'
+                        f'<div class="day-time-badge">{format_mins_to_hrs_mins(scheduled_mins)} scheduled <span class="time-max-cap">/ Max {format_mins_to_hrs_mins(day_cap_mins)}</span></div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if day_data.get("busy"):
+                        st.caption("Busy: " + ", ".join(day_data["busy"]))
+
+                    if visible_slots:
+                        for idx_slot, s in enumerate(visible_slots):
+                            s_key = s.get("slot_key")
+                            slot_prio_str = format_priority_display(s.get("priority"), user_prio_mode)
+                            slot_dur_str = format_mins_to_hrs_mins(s.get("eta_mins", 0))
+                            c_chk, c_text = st.columns([0.45, 7.55])
+                            with c_chk:
+                                st.checkbox("Done Today", value=False, key=f"chk_{s_key}_{idx_slot}", label_visibility="collapsed", on_change=on_daily_slot_check, args=(s_key, s.get("title"), s, user_id))
+                            with c_text:
+                                if show_time_slots:
+                                    st.markdown(f"<div style='padding-top:3px;'><span class='slot-badge'>{s['time']}</span> &nbsp; {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
+                                else:
+                                    st.markdown(f"<div style='padding-top:3px;'>• {get_course_badge_html(s['course'], is_light=is_light)} <span class='slot-title-text'>{s['title']}</span> <span class='slot-meta-text'>({slot_dur_str} • {slot_prio_str} Priority)</span></div>", unsafe_allow_html=True)
+                    else:
+                        st.caption("Free / No assignments scheduled")
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 
 @fragment_decorator
-def render_completed_recovery_fragment(user_id: str, is_light: bool):
+def render_completed_recovery_fragment(user_id: str, email: str, is_light: bool):
+    render_feature_stage_header("completed_recovery", user_id, email)
     df_all = get_assignments_cached(user_id)
     st.markdown("<div class='section-heading'>Completed & Recovery Center</div>", unsafe_allow_html=True)
     st.caption("Tasks you checked off today or finished before their due date can be restored right here.")
@@ -4111,25 +3734,6 @@ def render_completed_recovery_fragment(user_id: str, is_light: bool):
 # Main Application Entry
 # -----------------------
 def main():
-    try:
-        qp = st.query_params
-        if "sync" in qp:
-            raw_sync = qp.get("sync")
-            if isinstance(raw_sync, list):
-                raw_sync = raw_sync[0] if raw_sync else ""
-            raw_auto = qp.get("auto", "")
-            if isinstance(raw_auto, list):
-                raw_auto = raw_auto[0] if raw_auto else ""
-            decoded_items = _decode_classroom_sync_payload(str(raw_sync or ""))
-            if decoded_items:
-                if str(raw_auto) == "1":
-                    st.session_state["_classroom_auto_sync"] = decoded_items
-                else:
-                    st.session_state["_classroom_sync_preview"] = decoded_items
-            st.query_params.clear()
-    except Exception:
-        pass
-
     user = st.session_state.get("user")
     if not user:
         render_terminal_auth_page()
@@ -4139,26 +3743,28 @@ def main():
     email = user.get("email", "")
     hydrate_user_session(user_id)
 
-    theme_cfg = get_theme_cached(user_id)
+    theme_enabled = is_feature_enabled_for_user("theme_studio", email)
+    prio_scales_enabled = is_feature_enabled_for_user("custom_priority_scales", email)
+    shs_enabled = is_feature_enabled_for_user("shs_bell_schedule", email)
+    ai_enabled = is_feature_enabled_for_user("ai_study_planner", email)
+    recovery_enabled = is_feature_enabled_for_user("completed_recovery", email)
+
+    theme_cfg = get_theme_cached(user_id) if theme_enabled else dict(DEFAULT_THEME_CONFIG)
     is_light = (theme_cfg.get("mode", "Dark") == "Light")
     st.markdown(build_theme_css(theme_cfg), unsafe_allow_html=True)
 
-    user_prio_mode = get_prio_cached(user_id) or "Low / Medium / High"
+    user_prio_mode = (get_prio_cached(user_id) or "Low / Medium / High") if prio_scales_enabled else "Low / Medium / High"
     shs_cfg = get_shs_cached(user_id)
 
-    if "_classroom_auto_sync" in st.session_state:
-        auto_items = st.session_state.pop("_classroom_auto_sync")
-        st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, email, auto_items)
-
-    # Admin System Crash / Fallback Alert Banner
+    # Admin System Crash / Error Alert Banner
     if is_admin_user(email):
         unresolved_errs = get_unresolved_feature_errors()
         if unresolved_errs:
             latest_err = unresolved_errs[0]
             st.markdown(
                 f"<div class='crash-alert-box'>"
-                f"<div style='font-weight:800; font-size:0.88rem;'>🚨 Feature Fallback Alert ({len(unresolved_errs)} active) — {latest_err.get('feature_name')}</div>"
-                f"<div style='font-size:0.80rem; margin-top:2px;'><b>Error:</b> {latest_err.get('error_msg')} &bull; <i>Users were safely routed to fallback mode.</i></div>"
+                f"<div style='font-weight:800; font-size:0.88rem;'>🚨 Feature Error Alert ({len(unresolved_errs)} active) — {latest_err.get('feature_name')}</div>"
+                f"<div style='font-size:0.80rem; margin-top:2px;'><b>Error:</b> {latest_err.get('error_msg')}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -4171,7 +3777,7 @@ def main():
                     resolve_feature_error(str(latest_err["id"]))
                     safe_rerun("app")
 
-    # Header Toolbar (8 actions)
+    # Header Toolbar
     col_brand, col_actions = st.columns([1.85, 3.15])
     with col_brand:
         creator_tag = " &bull; Creator Mode" if is_admin_user(email) else ""
@@ -4196,51 +3802,57 @@ def main():
     inbox_btn_label = f"Inbox ({unread_fb_count})" if (is_admin_user(email) and unread_fb_count > 0) else (
         "Inbox" if is_admin_user(email) else (f"Feedback ({unread_fb_count})" if unread_fb_count > 0 else "Feedback")
     )
-    sync_btn_label = "Sync 🧪" if (is_feature_in_beta("classroom_sync_v2") and not is_admin_user(email)) else "Sync"
 
+    toolbar_specs: List[Tuple[str, str, str]] = [("add", "+ Task", "top_add_btn")]
+    if is_admin_user(email):
+        toolbar_specs.append(("releases", "Releases", "top_releases_btn"))
+    toolbar_specs.append(("courses", "Courses", "top_courses_btn"))
+    if prio_scales_enabled:
+        prio_lbl = "Priority 🧪" if (is_feature_in_beta("custom_priority_scales") and not is_admin_user(email)) else "Priority"
+        toolbar_specs.append(("prio", prio_lbl, "top_prio_btn"))
+    if theme_enabled:
+        thm_lbl = "Theme 🧪" if (is_feature_in_beta("theme_studio") and not is_admin_user(email)) else "Theme"
+        toolbar_specs.append(("theme", thm_lbl, "top_theme_btn"))
+    toolbar_specs.extend([
+        ("updates", "Updates", "top_updates_btn"),
+        ("feedback", inbox_btn_label, "top_feedback_btn"),
+        ("signout", "Sign Out", "top_signout_btn"),
+    ])
+
+    clicked_actions: Dict[str, bool] = {}
     with col_actions:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        b1, b2, b3, b4, b5, b6, b7, b8 = st.columns(8)
-        with b1:
-            add_btn = st.button("+ Task", key="top_add_btn", use_container_width=True)
-        with b2:
-            sync_btn = st.button(sync_btn_label, key="top_sync_btn", use_container_width=True)
-        with b3:
-            courses_btn = st.button("Courses", key="top_courses_btn", use_container_width=True)
-        with b4:
-            prio_btn = st.button("Priority", key="top_prio_btn", use_container_width=True)
-        with b5:
-            theme_btn = st.button("Theme", key="top_theme_btn", use_container_width=True)
-        with b6:
-            updates_btn = st.button("Updates", key="top_updates_btn", use_container_width=True)
-        with b7:
-            feedback_btn = st.button(inbox_btn_label, key="top_feedback_btn", use_container_width=True)
-        with b8:
-            signout_btn = st.button("Sign Out", key="top_signout_btn", use_container_width=True)
+        btn_cols = st.columns(len(toolbar_specs))
+        for idx_btn, (act_id, act_lbl, act_key) in enumerate(toolbar_specs):
+            with btn_cols[idx_btn]:
+                clicked_actions[act_id] = st.button(act_lbl, key=act_key, use_container_width=True)
 
     # Today's Date + Live SHS Rotation Pill Banner
     now_local = get_local_now()
-    shs_today_info = get_shs_day_info(now_local.date(), shs_cfg.get("sheet_url", ""))
-    t_letter = shs_today_info.get("letter", "A")
-    t_sched = shs_today_info.get("schedule", "Daily")
-    if t_letter == "WEEKEND":
-        shs_pill_text = "SHS: Weekend"
-    elif t_letter == "NO SCHOOL":
-        shs_pill_text = f"SHS: No School ({shs_today_info.get('note', 'Holiday')})"
+    if shs_enabled:
+        shs_today_info = get_shs_day_info(now_local.date(), shs_cfg.get("sheet_url", ""))
+        t_letter = shs_today_info.get("letter", "A")
+        t_sched = shs_today_info.get("schedule", "Daily")
+        if t_letter == "WEEKEND":
+            shs_pill_text = "SHS: Weekend"
+        elif t_letter == "NO SCHOOL":
+            shs_pill_text = f"SHS: No School ({shs_today_info.get('note', 'Holiday')})"
+        else:
+            sched_tag = f" • {t_sched}" if t_sched != "Daily" else ""
+            shs_pill_text = f"SHS: {t_letter} Day{sched_tag}"
+
+        st.markdown(
+            f"<div class='date-banner'>Today's Date: {now_local.strftime('%A, %B %d, %Y')} "
+            f"<span class='shs-day-pill'>{shs_pill_text}</span></div>",
+            unsafe_allow_html=True,
+        )
     else:
-        sched_tag = f" • {t_sched}" if t_sched != "Daily" else ""
-        shs_pill_text = f"SHS: {t_letter} Day{sched_tag}"
+        st.markdown(
+            f"<div class='date-banner'>Today's Date: {now_local.strftime('%A, %B %d, %Y')}</div>",
+            unsafe_allow_html=True,
+        )
 
-    st.markdown(
-        f"<div class='date-banner'>Today's Date: {now_local.strftime('%A, %B %d, %Y')} "
-        f"<span class='shs-day-pill'>{shs_pill_text}</span></div>",
-        unsafe_allow_html=True,
-    )
-
-    if "_sync_banner_msg" in st.session_state:
-        st.success(st.session_state.pop("_sync_banner_msg"))
-
-    if signout_btn:
+    if clicked_actions.get("signout"):
         sign_out_user()
         return
 
@@ -4249,28 +3861,29 @@ def main():
     prefill_fb = st.session_state.pop("_open_feedback_prefill", None)
     seen_ver = get_seen_updates_cached(user_id)
 
+    all_feats = get_all_registered_features()
     global_statuses = get_global_feature_statuses()
     seen_releases = get_seen_releases_cached(user_id)
     newly_released_for_user = [
         fk for fk, st_val in global_statuses.items()
-        if st_val == "released" and fk in FEATURE_REGISTRY and fk not in seen_releases
+        if st_val == "released" and fk in all_feats and fk not in seen_releases
     ]
 
-    if add_btn:
+    if clicked_actions.get("add"):
         show_add_assignment_dialog(user_id, user_prio_mode)
-    elif sync_btn or "_classroom_sync_preview" in st.session_state:
-        show_classroom_sync_dialog(user_id, email, user_prio_mode)
+    elif clicked_actions.get("releases") and is_admin_user(email):
+        show_feature_release_panel_dialog(email)
     elif pending_edit_aid:
         show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
-    elif courses_btn:
+    elif clicked_actions.get("courses"):
         show_manage_courses_dialog(user_id)
-    elif prio_btn:
-        show_prio_config_dialog(user_id)
-    elif theme_btn:
-        show_theme_dialog(user_id)
-    elif updates_btn:
+    elif clicked_actions.get("prio") and prio_scales_enabled:
+        show_prio_config_dialog(user_id, email)
+    elif clicked_actions.get("theme") and theme_enabled:
+        show_theme_dialog(user_id, email)
+    elif clicked_actions.get("updates"):
         show_updates_dialog(user_id, email, is_first_time=False)
-    elif feedback_btn or prefill_fb:
+    elif clicked_actions.get("feedback") or prefill_fb:
         if is_admin_user(email):
             show_admin_feedback_inbox_dialog(user_id, email)
         else:
@@ -4281,11 +3894,17 @@ def main():
         show_public_release_dialog(user_id, newly_released_for_user)
     elif not get_courses_cached(user_id):
         show_welcome_courses_dialog(user_id)
-    elif get_prio_cached(user_id) is None:
-        show_prio_config_dialog(user_id)
+    elif prio_scales_enabled and get_prio_cached(user_id) is None:
+        show_prio_config_dialog(user_id, email)
 
-    # Top Navigation Pill Bar
-    nav_options = ["Assignments", "Tests & Quizzes", "Other", "Schedule & AI Planner", "SHS Bell Schedule", "Completed & Recovery"]
+    # Top Navigation Pill Bar (dynamically hides admin_only tabs for non-admins)
+    sched_tab_label = "Schedule & AI Planner" if ai_enabled else "Weekly Schedule"
+    nav_options = ["Assignments", "Tests & Quizzes", "Other", sched_tab_label]
+    if shs_enabled:
+        nav_options.append("SHS Bell Schedule")
+    if recovery_enabled:
+        nav_options.append("Completed & Recovery")
+
     active_view = st.radio("Workspace Navigation", nav_options, horizontal=True, label_visibility="collapsed", key="main_workspace_nav")
 
     if active_view == "Assignments":
@@ -4294,12 +3913,12 @@ def main():
         render_assignment_grid_fragment(user_id, "tests", user_prio_mode, is_light, "tst_")
     elif active_view == "Other":
         render_assignment_grid_fragment(user_id, "other", user_prio_mode, is_light, "oth_")
-    elif active_view == "Schedule & AI Planner":
-        render_schedule_and_ai_fragment(user_id, user_prio_mode, is_light)
-    elif active_view == "SHS Bell Schedule":
-        render_shs_bell_schedule_fragment(user_id, is_light)
-    elif active_view == "Completed & Recovery":
-        render_completed_recovery_fragment(user_id, is_light)
+    elif active_view == sched_tab_label:
+        render_schedule_and_ai_fragment(user_id, email, user_prio_mode, is_light)
+    elif active_view == "SHS Bell Schedule" and shs_enabled:
+        render_shs_bell_schedule_fragment(user_id, email, is_light)
+    elif active_view == "Completed & Recovery" and recovery_enabled:
+        render_completed_recovery_fragment(user_id, email, is_light)
 
 
 if __name__ == "__main__":
