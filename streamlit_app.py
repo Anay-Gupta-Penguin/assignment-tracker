@@ -1,5 +1,5 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule & Theme Studio
+📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Classroom Sync & Theme Studio
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.4"
+CURRENT_APP_VERSION = "3.5"
 
 
 def get_local_now() -> datetime:
@@ -1523,6 +1523,7 @@ def clear_all_session_caches():
         "cfg_max_work", "cfg_completed_slots", "cfg_completed_slots_date",
         "cfg_seen_updates", "cfg_theme", "cfg_shs", "_ai_plan_result",
         "_undo_slot_state", "_hydrated_uid", "_pending_edit_aid",
+        "_classroom_sync_preview", "_classroom_auto_sync", "_sync_banner_msg",
     ]:
         st.session_state.pop(k, None)
 
@@ -1587,6 +1588,7 @@ def hydrate_user_session(user_id: str, force: bool = False) -> None:
         "periods": {str(i): "" for i in range(1, 9)},
         "study_rooms": {"A": "", "B": "", "C": "", "D": "", "X": ""},
         "sheet_url": "",
+        "app_url": "",
     }
 
     assignment_rows: List[Dict[str, Any]] = []
@@ -1751,6 +1753,7 @@ def get_shs_cached(user_id: str) -> Dict[str, Any]:
             "periods": {str(i): "" for i in range(1, 9)},
             "study_rooms": dict(default_rooms),
             "sheet_url": "",
+            "app_url": "",
         },
     )
     if "lunches" not in cfg:
@@ -1760,6 +1763,8 @@ def get_shs_cached(user_id: str) -> Dict[str, Any]:
         cfg["study_rooms"] = dict(default_rooms)
     if "sheet_url" not in cfg:
         cfg["sheet_url"] = ""
+    if "app_url" not in cfg:
+        cfg["app_url"] = ""
     return cfg
 
 
@@ -2168,7 +2173,13 @@ def render_terminal_auth_page():
                         if "error" in res:
                             st.error(f"Sign in failed: {res['error']}")
                         else:
+                            pending_preview = st.session_state.get("_classroom_sync_preview")
+                            pending_auto = st.session_state.get("_classroom_auto_sync")
                             clear_all_session_caches()
+                            if pending_preview:
+                                st.session_state["_classroom_sync_preview"] = pending_preview
+                            if pending_auto:
+                                st.session_state["_classroom_auto_sync"] = pending_auto
                             st.session_state.user = res["data"]
                             hydrate_user_session(res["data"]["id"], force=True)
                             auth_container.empty()
@@ -2290,15 +2301,15 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.4 NEW</span> <b>Live SHS Bell Schedule & Spreadsheet Sync</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.5 NEW</span> <b>1-Click Google Classroom Sync Bookmarklet</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Auto-detects A/B/C/D/X days, Connect Wednesdays, delays, and early dismissals with live class countdowns, per-day lunch waves (L1/L2/L3), Study Hall rooms, and optional Google Sheet calendar sync.
+                    Click <b>Sync</b> in the top bar to grab your Chrome bookmarklet. Clicking it on your Google Classroom To-do list scans all assignments, matches your classes, skips duplicates, and auto-imports them in one click.
                 </div>
             </div>
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>NEW</span> <b>Direct Student Feedback Portal</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.4</span> <b>Live SHS Bell Schedule & Spreadsheet Sync</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Click the <b>Feedback</b> button in the top bar anytime to report bugs, suggest features, or rate your experience.
+                    Auto-detects A/B/C/D/X days, Connect Wednesdays, delays, and early dismissals with live class countdowns, per-day lunch waves (L1/L2/L3), Study Hall rooms, and optional Google Sheet calendar sync.
                 </div>
             </div>
             <div class='update-card'>
@@ -2340,16 +2351,16 @@ def show_updates_dialog(user_id: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='tip-card'>
-                <b>1. Personalize Your SHS Bell Schedule:</b><br/>
+                <b>1. 1-Click Classroom Bookmarklet:</b><br/>
+                Save the bookmarklet from the <b>Sync</b> button to your Chrome bookmarks bar. Clicking it from any tab opens Classroom To-do; clicking it on Classroom auto-imports your tasks.
+            </div>
+            <div class='tip-card'>
+                <b>2. Personalize Your SHS Bell Schedule:</b><br/>
                 Open the <b>SHS Bell Schedule</b> tab to assign your Period 1–8 classes, set your lunch wave (L1/L2/L3) for each rotation letter, and enter Study Hall room numbers.
             </div>
             <div class='tip-card'>
-                <b>2. Auto-Repeating Study & Daily Tasks:</b><br/>
+                <b>3. Auto-Repeating Study & Daily Tasks:</b><br/>
                 Any task set to <i>Test & Quizzes</i>, containing words like <i>"study"</i>, <i>"review"</i>, or <i>"prep"</i>, or using <b>/day</b> in its duration (e.g. <code>30 mins/day</code>) automatically schedules a session every day leading up to its due date.
-            </div>
-            <div class='tip-card'>
-                <b>3. Easy Recovery & Auto-Cleanup:</b><br/>
-                Checked-off items stay in <b>Completed & Recovery</b> until their due date passes so you can restore anything anytime.
             </div>
             """,
             unsafe_allow_html=True,
@@ -2532,6 +2543,325 @@ def show_manage_courses_dialog(user_id: str):
 
 
 # -----------------------
+# Google Classroom Bookmarklet & Paste Sync Engine
+# -----------------------
+def _detect_live_app_url(saved_url: str = "") -> str:
+    clean_saved = str(saved_url or "").strip().rstrip("/")
+    if clean_saved:
+        return clean_saved
+    try:
+        ctx = getattr(st, "context", None)
+        if ctx and hasattr(ctx, "headers"):
+            host = str(ctx.headers.get("Host", "")).strip()
+            proto = str(ctx.headers.get("X-Forwarded-Proto", "https")).strip() or "https"
+            if host and "localhost" not in host and "127.0.0.1" not in host:
+                return f"{proto}://{host}"
+    except Exception:
+        pass
+    return ""
+
+
+def _infer_classroom_atype(title: str) -> str:
+    t = str(title or "").lower()
+    if any(k in t for k in ["test", "quiz", "exam", "midterm", "final", "assessment"]):
+        return "Test & Quizzes"
+    if any(k in t for k in ["essay", "paper", "dbq", "frq", "research", "rough draft", "final draft"]):
+        return "Essay"
+    if any(k in t for k in ["presentation", "slides", "slideshow", "poster", "project", "speech"]):
+        return "Presentation"
+    return "Homework"
+
+
+def _match_classroom_course(raw_course: str, user_courses: List[str]) -> str:
+    rc = str(raw_course or "").strip()
+    if not rc:
+        return "GENERAL"
+    rc_up = rc.upper()
+    for c in user_courses:
+        c_up = c.strip().upper()
+        if c_up and c_up != "OTHER" and (c_up == rc_up or c_up in rc_up or rc_up in c_up):
+            return c_up
+    keyword_map = {
+        "MATH": ["ALGEBRA", "GEOMETRY", "CALCULUS", "PRECALC", "STATISTICS", "MATH"],
+        "SCIENCE": ["BIOLOGY", "CHEMISTRY", "PHYSICS", "ENVIRONMENTAL", "ANATOMY", "SCIENCE"],
+        "ENGLISH": ["ENGLISH", "LITERATURE", "WRITING", "LANG", "COMPOSITION", "HUMANITIES"],
+        "HISTORY": ["HISTORY", "WORLD", "APUSH", "GOVERNMENT", "CIVICS", "ECONOMICS", "PSYCHOLOGY"],
+    }
+    for user_c in user_courses:
+        u_up = user_c.strip().upper()
+        for bucket, kws in keyword_map.items():
+            if bucket in u_up and any(k in rc_up for k in kws):
+                return u_up
+    cleaned = re.split(r"[-–—|•(]", rc_up)[0].strip()
+    return cleaned[:24] if cleaned else "GENERAL"
+
+
+def _parse_classroom_due_date(raw_due: str) -> str:
+    s = str(raw_due or "").strip()
+    if not s or "no due date" in s.lower():
+        return ""
+    today = get_local_now().date()
+    low = s.lower()
+    if "today" in low:
+        return today.isoformat()
+    if "tomorrow" in low:
+        return (today + timedelta(days=1)).isoformat()
+    if "yesterday" in low:
+        return (today - timedelta(days=1)).isoformat()
+
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for idx_d, d_name in enumerate(day_names):
+        if re.search(rf"\b{d_name}\b", low):
+            diff = (idx_d - today.weekday()) % 7
+            return (today + timedelta(days=diff)).isoformat()
+
+    s_clean = re.sub(r"^due\s+", "", s, flags=re.I)
+    s_clean = re.sub(r",?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?$", "", s_clean, flags=re.I).strip()
+
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s_clean, fmt).date().isoformat()
+        except ValueError:
+            pass
+    for fmt_no_yr in ("%b %d", "%B %d", "%m/%d"):
+        try:
+            parsed = datetime.strptime(s_clean, fmt_no_yr)
+            yr = today.year + 1 if (today.month >= 11 and parsed.month <= 2) else today.year
+            return date(yr, parsed.month, parsed.day).isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
+def _decode_classroom_sync_payload(sync_b64: str) -> List[Dict[str, str]]:
+    if not sync_b64:
+        return []
+    try:
+        padded = sync_b64 + "=" * (-len(sync_b64) % 4)
+        raw_json = base64.b64decode(padded).decode("utf-8", errors="replace")
+        data = json.loads(raw_json)
+        if not isinstance(data, list):
+            return []
+        out = []
+        for item in data:
+            if isinstance(item, dict) and item.get("t"):
+                out.append({
+                    "title": str(item.get("t", "")).strip(),
+                    "raw_course": str(item.get("c", "")).strip(),
+                    "raw_due": str(item.get("d", "")).strip(),
+                })
+        return out
+    except Exception:
+        return []
+
+
+def _parse_classroom_pasted_text(raw_text: str) -> List[Dict[str, str]]:
+    skip_exact = {
+        "to-do", "to do", "assigned", "missing", "done", "all classes",
+        "no due date", "this week", "next week", "later", "earlier",
+        "last week", "assignment", "quiz", "description", "more_vert",
+        "work with a due date", "work without a due date",
+    }
+    date_line_re = re.compile(
+        r"^(due\s+|today|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}/\d{1,2})",
+        re.I,
+    )
+    lines = [
+        ln.strip()
+        for ln in str(raw_text or "").splitlines()
+        if ln.strip() and ln.strip().lower() not in skip_exact and not ln.strip().isdigit()
+    ]
+    items: List[Dict[str, str]] = []
+    i = 0
+    while i + 1 < len(lines):
+        t_cand = lines[i]
+        c_cand = lines[i + 1]
+        if date_line_re.match(t_cand):
+            i += 1
+            continue
+        d_cand = ""
+        step = 2
+        if i + 2 < len(lines) and date_line_re.match(lines[i + 2]):
+            d_cand = lines[i + 2]
+            step = 3
+        items.append({"title": t_cand, "raw_course": c_cand, "raw_due": d_cand})
+        i += step
+    return items
+
+
+def build_classroom_bookmarklet(app_url: str, auto_import: bool = True) -> str:
+    clean_url = str(app_url or "").strip().rstrip("/") or "https://YOUR-APP.streamlit.app"
+    auto_suffix = "&auto=1" if auto_import else ""
+    return (
+        "javascript:(function(){"
+        "if(!location.hostname.includes('classroom.google.com')){"
+        "location.href='https://classroom.google.com/a/not-turned-in/all';return;}"
+        "var items=[],seen={},skip=/^(assignment|quiz|description|more_vert|event)$/i;"
+        "document.querySelectorAll('a[href*=\"/c/\"][href*=\"/a/\"],a[href*=\"/c/\"][href*=\"/sa/\"]').forEach(function(a){"
+        "var row=a.closest('li,[role=\"listitem\"]')||a;"
+        "var lines=(row.innerText||a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
+        "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
+        "if(!seen[k]&&t.length>1){seen[k]=1;items.push({t:t,c:c,d:d});}}});"
+        "if(!items.length){document.querySelectorAll('[role=\"listitem\"]').forEach(function(li){"
+        "var lines=(li.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s&&!skip.test(s);});"
+        "if(lines.length>=2){var t=lines[0],c=lines[1],d=lines.slice(2).join(' ');var k=t+'|'+c;"
+        "if(!seen[k]&&t.length>1&&t.length<140){seen[k]=1;items.push({t:t,c:c,d:d});}}});}"
+        "if(!items.length){alert('No assignments found here. Open your Google Classroom To-do list first, then click this bookmark again!');return;}"
+        "var payload=btoa(unescape(encodeURIComponent(JSON.stringify(items))));"
+        f"location.href='{clean_url}/?sync='+encodeURIComponent(payload)+'{auto_suffix}';"
+        "})();"
+    )
+
+
+def process_auto_classroom_sync(user_id: str, incoming_items: List[Dict[str, str]]) -> str:
+    if not incoming_items:
+        return ""
+    user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    df_existing = get_assignments_cached(user_id)
+    existing_titles = set(
+        df_existing["title"].astype(str).str.strip().str.lower().tolist()
+    ) if not df_existing.empty else set()
+
+    to_add: List[Dict[str, Any]] = []
+    skipped_dups = 0
+    for item in incoming_items:
+        t_clean = str(item.get("title", "")).strip()
+        if not t_clean:
+            continue
+        if t_clean.lower() in existing_titles:
+            skipped_dups += 1
+            continue
+        existing_titles.add(t_clean.lower())
+        to_add.append({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "title": t_clean,
+            "course": _match_classroom_course(item.get("raw_course", ""), user_courses),
+            "due_date": _parse_classroom_due_date(item.get("raw_due", "")),
+            "status": "Not Started",
+            "priority": priority_to_int("Medium"),
+            "atype": _infer_classroom_atype(t_clean),
+            "eta": "",
+            "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})".strip(),
+            "created_at": get_local_now().isoformat(),
+            "prev_status": "Not Started",
+        })
+
+    if to_add:
+        upsert_assignments(to_add)
+        dup_note = f" ({skipped_dups} duplicate{'s' if skipped_dups != 1 else ''} skipped)" if skipped_dups else ""
+        return f"⚡ Auto-synced {len(to_add)} new assignment{'s' if len(to_add) != 1 else ''} from Google Classroom!{dup_note}"
+    return f"✅ Google Classroom checked — all {skipped_dups} assignment{'s are' if skipped_dups != 1 else ' is'} already in your tracker!"
+
+
+@dialog_decorator("📥 Sync Google Classroom")
+def show_classroom_sync_dialog(user_id: str, user_prio_mode: str):
+    shs_cfg = get_shs_cached(user_id)
+    user_courses = get_courses_cached(user_id) or ["MATH", "SCIENCE", "ENGLISH", "HISTORY", "OTHER"]
+    df_existing = get_assignments_cached(user_id)
+    existing_titles = set(
+        df_existing["title"].astype(str).str.strip().str.lower().tolist()
+    ) if not df_existing.empty else set()
+
+    incoming_items = st.session_state.get("_classroom_sync_preview", [])
+
+    if incoming_items:
+        st.success(f"Found {len(incoming_items)} item(s) from Google Classroom! Uncheck any you want to skip:")
+        default_prio = st.selectbox("Default Priority for Imported Tasks", PRIORITY_OPTIONS, index=1, key="sync_def_prio")
+        selected_to_import: List[Dict[str, Any]] = []
+
+        for idx, item in enumerate(incoming_items):
+            t_clean = item["title"]
+            mapped_c = _match_classroom_course(item.get("raw_course", ""), user_courses)
+            parsed_due = _parse_classroom_due_date(item.get("raw_due", ""))
+            inferred_type = _infer_classroom_atype(t_clean)
+            is_dup = (t_clean.lower() in existing_titles)
+
+            due_lbl = f"Due {parsed_due}" if parsed_due else "No due date"
+            dup_lbl = " (Already in tracker)" if is_dup else ""
+            checked = st.checkbox(
+                f"{t_clean} — [{mapped_c} • {inferred_type} • {due_lbl}]{dup_lbl}",
+                value=(not is_dup),
+                key=f"sync_chk_{idx}",
+            )
+            if checked:
+                selected_to_import.append({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "title": t_clean,
+                    "course": mapped_c,
+                    "due_date": parsed_due,
+                    "status": "Not Started",
+                    "priority": priority_to_int(default_prio),
+                    "atype": inferred_type,
+                    "eta": "",
+                    "notes": f"Synced from Google Classroom ({item.get('raw_course', '')})".strip(),
+                    "created_at": get_local_now().isoformat(),
+                    "prev_status": "Not Started",
+                })
+
+        c_imp, c_clr = st.columns([2, 1])
+        with c_imp:
+            if st.button(f"Import {len(selected_to_import)} Selected Task(s)", key="confirm_classroom_import_btn", use_container_width=True):
+                if selected_to_import:
+                    upsert_assignments(selected_to_import)
+                st.session_state.pop("_classroom_sync_preview", None)
+                safe_rerun("app")
+        with c_clr:
+            if st.button("Discard", key="discard_classroom_import_btn", use_container_width=True):
+                st.session_state.pop("_classroom_sync_preview", None)
+                safe_rerun("app")
+        st.markdown("---")
+
+    tab_bm, tab_paste = st.tabs(["⚡ 1-Click Bookmarklet Setup", "📋 Quick Paste Backup"])
+
+    with tab_bm:
+        st.caption("Save this bookmarklet once to your Chrome bookmarks bar. Clicking it on Google Classroom scans your To-do list and auto-imports your assignments immediately.")
+        detected_url = _detect_live_app_url(shs_cfg.get("app_url", ""))
+        app_url_input = st.text_input(
+            "1. Your Streamlit App URL (auto-detected)",
+            value=detected_url,
+            placeholder="https://your-app-name.streamlit.app",
+            key="classroom_app_url_input",
+        )
+        if app_url_input.strip() and app_url_input.strip().rstrip("/") != str(shs_cfg.get("app_url", "")).strip():
+            updated_cfg = dict(shs_cfg)
+            updated_cfg["app_url"] = app_url_input.strip().rstrip("/")
+            _write_shs_config(user_id, updated_cfg)
+
+        auto_mode_chk = st.checkbox(
+            "Instant Auto-Import (skip preview screen and import new tasks automatically)",
+            value=True,
+            key="classroom_auto_mode_chk",
+        )
+
+        bm_code = build_classroom_bookmarklet(app_url_input or detected_url, auto_import=auto_mode_chk)
+        st.markdown("**2. Copy this entire bookmarklet code (click the copy icon on the right):**")
+        st.code(bm_code, language="text")
+        st.markdown(
+            """
+            **3. How to use it:**
+            1. In Chrome, press **Ctrl+Shift+B** (or **Cmd+Shift+B** on Mac) to show your bookmarks bar.
+            2. Right-click the bookmarks bar → **Add page...**
+            3. Name it **`Sync to Tracker`** and paste the code above into the **URL** box.
+            4. Click **`Sync to Tracker`** from any tab to jump to Classroom To-do, then click **`Sync to Tracker`** again to import!
+            """
+        )
+
+    with tab_paste:
+        st.caption("If your school Chromebook blocks bookmarklets, open your Google Classroom To-do page, press **Ctrl+A** then **Ctrl+C**, and paste below:")
+        pasted_blob = st.text_area("Paste Classroom To-do Page Text Here", height=140, key="classroom_paste_area")
+        if st.button("Scan Pasted Text", key="parse_pasted_classroom_btn", use_container_width=True):
+            parsed_items = _parse_classroom_pasted_text(pasted_blob)
+            if not parsed_items:
+                st.error("Could not detect assignments from that text. Make sure you copied the Google Classroom To-do page.")
+            else:
+                st.session_state["_classroom_sync_preview"] = parsed_items
+                safe_rerun("app")
+
+
+# -----------------------
 # Isolated @st.fragment Workspaces
 # -----------------------
 @fragment_decorator
@@ -2686,12 +3016,14 @@ def render_shs_bell_schedule_fragment(user_id: str, is_light: bool):
         sc1, sc2 = st.columns([2, 1])
         with sc1:
             if st.button("Save My SHS Schedule", key="save_shs_cfg_btn", use_container_width=True):
-                _write_shs_config(user_id, {
+                updated_shs = dict(shs_cfg)
+                updated_shs.update({
                     "lunches": new_lunches,
                     "periods": new_periods,
                     "study_rooms": new_rooms,
                     "sheet_url": new_sheet_url.strip(),
                 })
+                _write_shs_config(user_id, updated_shs)
                 st.success("Saved your personalized SHS bell schedule!")
         with sc2:
             if st.button("Refresh Calendar Sync", key="refresh_shs_sheet_btn", use_container_width=True):
@@ -2966,6 +3298,20 @@ def render_completed_recovery_fragment(user_id: str, is_light: bool):
 # -----------------------
 # Main Application Entry
 # -----------------------
+incoming_sync_param = st.query_params.get("sync")
+incoming_auto_param = str(st.query_params.get("auto", "")).strip() == "1"
+if incoming_sync_param:
+    decoded_sync = _decode_classroom_sync_payload(str(incoming_sync_param))
+    if decoded_sync:
+        if incoming_auto_param:
+            st.session_state["_classroom_auto_sync"] = decoded_sync
+        else:
+            st.session_state["_classroom_sync_preview"] = decoded_sync
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
 user = st.session_state.get("user")
 if not user:
     render_terminal_auth_page()
@@ -2975,6 +3321,11 @@ user_id = str(user.get("id"))
 email = str(user.get("email", "User"))
 
 hydrate_user_session(user_id)
+
+auto_sync_items = st.session_state.pop("_classroom_auto_sync", None)
+if auto_sync_items:
+    st.session_state["_sync_banner_msg"] = process_auto_classroom_sync(user_id, auto_sync_items)
+
 user_theme = get_theme_cached(user_id)
 is_light_theme = (user_theme.get("mode") == "Light")
 st.markdown(build_theme_css(user_theme), unsafe_allow_html=True)
@@ -2986,6 +3337,8 @@ user_prio_mode = active_prio_mode or "Low / Medium / High"
 pending_edit_aid = st.session_state.pop("_pending_edit_aid", None)
 if pending_edit_aid:
     show_edit_assignment_dialog(user_id, pending_edit_aid, user_prio_mode)
+elif st.session_state.get("_classroom_sync_preview"):
+    show_classroom_sync_dialog(user_id, user_prio_mode)
 elif seen_updates_ver != CURRENT_APP_VERSION:
     show_updates_dialog(user_id, is_first_time=True)
 elif not get_courses_cached(user_id):
@@ -3015,28 +3368,35 @@ with col_header_left:
     )
 
 with col_header_right:
-    b1, b2, b3, b4, b5, b6, b7 = st.columns([1.0, 0.95, 0.95, 0.9, 0.95, 1.0, 0.95])
+    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns([0.95, 0.85, 0.95, 0.95, 0.85, 0.95, 0.95, 0.95])
     with b1:
         if st.button("+ Task", key="toolbar_add", use_container_width=True):
             show_add_assignment_dialog(user_id, user_prio_mode)
     with b2:
+        if st.button("Sync", key="toolbar_sync", use_container_width=True):
+            show_classroom_sync_dialog(user_id, user_prio_mode)
+    with b3:
         if st.button("Courses", key="toolbar_courses", use_container_width=True):
             show_manage_courses_dialog(user_id)
-    with b3:
+    with b4:
         if st.button("Priority", key="toolbar_prio_sys", use_container_width=True):
             show_prio_config_dialog(user_id)
-    with b4:
+    with b5:
         if st.button("Theme", key="toolbar_theme", use_container_width=True):
             show_theme_dialog(user_id)
-    with b5:
+    with b6:
         if st.button("Updates", key="toolbar_updates", use_container_width=True):
             show_updates_dialog(user_id, is_first_time=False)
-    with b6:
+    with b7:
         if st.button("Feedback", key="toolbar_feedback", use_container_width=True):
             show_feedback_dialog(user_id, email)
-    with b7:
+    with b8:
         if st.button("Sign Out", key="toolbar_signout", use_container_width=True):
             sign_out_user()
+
+sync_banner_msg = st.session_state.pop("_sync_banner_msg", None)
+if sync_banner_msg:
+    st.success(sync_banner_msg)
 
 now_banner = get_local_now()
 today_str = now_banner.strftime("%A, %B %d, %Y")
