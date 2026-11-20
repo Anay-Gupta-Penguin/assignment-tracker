@@ -3310,7 +3310,7 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
         df_grid = df_all[(df_all["status"] != "Done") & ((df_all["atype"] == "Other") | (df_all["course"] == "OTHER"))]
 
     if df_grid.empty:
-        st.markdown("<div style='padding:45px 0; text-align:center; font-size:0.9rem;' class='card-note-text'>No active assignments in this view.</div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding:45px 0; text-align:center; font-size:0.9rem;' class='card-note-text'>GOOD! YOU FINISHED YOU HOMEOWORK, GO HAVE FUN, OR DO THE OTHA STUDYING!</div>", unsafe_allow_html=True)
         return
 
     df_sorted = df_grid.copy()
@@ -3655,7 +3655,7 @@ def render_schedule_and_ai_fragment(user_id: str, email: str, user_prio_mode: st
             status, plan = plan_res.get("status"), plan_res.get("plan", {})
 
             if status == "no_tasks":
-                st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
+                st.info("GOOD! YOU FINISHED YOU HOMEOWORK, GO HAVE FUN, OR DO THE OTHA STUDYING! ONE MORE OPTION: Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
             elif status == "all_done":
                 st.success("All assignments marked completed!")
             elif status == "success" and plan:
