@@ -1,5 +1,5 @@
 """
-📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule, Theme Studio & Feature Release Engine
+📚 Assignment Tracker — Zero-Latency @st.fragment, Live SHS Bell Schedule (2-Month Grid Parser), Theme Studio & Feature Release Engine
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import io
 import json
 import re
 import threading
-import traceback
 import urllib.request
 import uuid
 from datetime import datetime, date, timedelta, time
@@ -34,7 +33,7 @@ try:
 except Exception:
     HAS_PIL = False
 
-CURRENT_APP_VERSION = "3.9"
+CURRENT_APP_VERSION = "4.0"
 ADMIN_EMAILS = {"30guptaa@simsburyschools.net"}
 
 
@@ -48,7 +47,7 @@ def is_admin_user(email: str) -> bool:
 FEATURE_REGISTRY: Dict[str, Dict[str, str]] = {
     "shs_bell_schedule": {
         "name": "SHS Bell Schedule & Live Rotation",
-        "version": "3.4",
+        "version": "4.0",
         "default_status": "released",
         "location_hint": "SHS Bell Schedule tab & top rotation pill",
         "beta_summary": "Live A/B/C/D/X rotation, Connect Wednesdays, delays, early dismissals, lunch waves, and class countdowns.",
@@ -1031,7 +1030,7 @@ SYSTEM_TITLES = {
 
 
 # -----------------------
-# SHS Bell Schedule & Live Spreadsheet Calendar Engine
+# SHS Bell Schedule & Live 2-Month Grid Spreadsheet Calendar Engine
 # -----------------------
 SHS_ROTATIONS: Dict[str, List[int]] = {
     "A": [1, 2, 3, 5, 6, 7],
@@ -1062,33 +1061,50 @@ SHS_SCHEDULE_TYPES: List[str] = [
 SHS_FALLBACK_HOLIDAYS: Dict[str, str] = {
     "2026-09-07": "Labor Day",
     "2026-09-21": "Yom Kippur",
-    "2026-10-12": "Indigenous Peoples' Day",
-    "2026-11-03": "Election Day / PD",
-    "2026-11-26": "Thanksgiving Recess",
-    "2026-11-27": "Thanksgiving Recess",
-    "2026-12-24": "Winter Recess",
-    "2026-12-25": "Winter Recess",
-    "2026-12-28": "Winter Recess",
-    "2026-12-29": "Winter Recess",
-    "2026-12-30": "Winter Recess",
-    "2026-12-31": "Winter Recess",
+    "2026-10-12": "Columbus Day",
+    "2026-11-03": "Election Day",
+    "2026-11-26": "Thanksgiving Break",
+    "2026-11-27": "Thanksgiving Break",
+    "2026-12-24": "Holiday Break",
+    "2026-12-25": "Holiday Break",
+    "2026-12-28": "Holiday Break",
+    "2026-12-29": "Holiday Break",
+    "2026-12-30": "Holiday Break",
+    "2026-12-31": "Holiday Break",
     "2027-01-01": "New Year's Day",
     "2027-01-18": "MLK Jr. Day",
-    "2027-02-15": "Presidents' Day",
-    "2027-02-16": "February Break",
+    "2027-02-15": "No School",
+    "2027-02-16": "No School",
+    "2027-03-09": "Professional Dev.",
     "2027-03-26": "Good Friday",
-    "2027-04-12": "Spring Recess",
-    "2027-04-13": "Spring Recess",
-    "2027-04-14": "Spring Recess",
-    "2027-04-15": "Spring Recess",
-    "2027-04-16": "Spring Recess",
+    "2027-04-12": "Spring Break",
+    "2027-04-13": "Spring Break",
+    "2027-04-14": "Spring Break",
+    "2027-04-15": "Spring Break",
+    "2027-04-16": "Spring Break",
     "2027-05-31": "Memorial Day",
 }
 
 SHS_FALLBACK_SPECIAL_DAYS: Dict[str, Dict[str, str]] = {
-    "2026-08-31": {"letter": "X", "schedule": "X Day", "note": "First Day of School"},
-    "2026-11-25": {"letter": "D", "schedule": "Early Dismissal", "note": "Thanksgiving Early Dismissal"},
-    "2026-12-23": {"letter": "B", "schedule": "Early Dismissal", "note": "Winter Break Early Dismissal"},
+    "2026-08-26": {"letter": "A", "schedule": "Daily", "note": "First Day"},
+    "2026-08-27": {"letter": "D", "schedule": "Daily", "note": ""},
+    "2026-08-28": {"letter": "X", "schedule": "X Day", "note": ""},
+    "2026-11-25": {"letter": "B", "schedule": "Early Dismissal", "note": "Thanksgiving Early Dismissal"},
+    "2026-12-23": {"letter": "D", "schedule": "Early Dismissal", "note": "Holiday Break Early Dismissal"},
+}
+
+_MONTH_MAP: Dict[str, Tuple[int, int]] = {
+    "JANUARY": (1, 2027),
+    "FEBRUARY": (2, 2027),
+    "MARCH": (3, 2027),
+    "APRIL": (4, 2027),
+    "MAY": (5, 2027),
+    "JUNE": (6, 2027),
+    "AUGUST": (8, 2026),
+    "SEPTEMBER": (9, 2026),
+    "OCTOBER": (10, 2026),
+    "NOVEMBER": (11, 2026),
+    "DECEMBER": (12, 2026),
 }
 
 
@@ -1118,14 +1134,17 @@ def _parse_flexible_sheet_date(raw_val: str) -> Optional[date]:
         s,
         flags=re.I,
     ).strip()
+
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
         try:
             return datetime.strptime(s_clean, fmt).date()
         except ValueError:
             pass
-    for fmt_no_yr in ("%m/%d", "%b %d", "%B %d"):
+
+    # Append leap year 2000 so Python 3.13+ never emits DeprecationWarning or fails in 3.15
+    for fmt_no_yr in ("%m/%d", "%m-%d", "%b %d", "%B %d", "%b. %d"):
         try:
-            parsed = datetime.strptime(s_clean, fmt_no_yr)
+            parsed = datetime.strptime(f"{s_clean}/2000", f"{fmt_no_yr}/%Y")
             yr = 2026 if parsed.month >= 8 else 2027
             return date(yr, parsed.month, parsed.day)
         except ValueError:
@@ -1139,19 +1158,22 @@ def _extract_letter_and_sched(text_blob: str) -> Optional[Dict[str, str]]:
         return None
     up = raw.upper()
 
-    if any(k in up for k in ("NO SCHOOL", "HOLIDAY", "RECESS", "BREAK", "SNOW DAY", "CLOSED", "PD DAY", "PROFESSIONAL DEVELOPMENT")):
-        return {"letter": "NO SCHOOL", "schedule": "Daily", "note": raw}
+    if any(k in up for k in ("NO SCHOOL", "HOLIDAY", "RECESS", "BREAK", "SNOW DAY", "CLOSED", "PD DAY", "PROFESSIONAL DEV", "GOOD FRIDAY", "MEMORIAL DAY", "LABOR DAY", "COLUMBUS DAY", "ELECTION DAY", "YOM KIPPUR", "MLK")):
+        note_clean = re.sub(r"\b([1-9]|[12]\d|3[01])\b", "", raw).strip(" -:|•\n")
+        return {"letter": "NO SCHOOL", "schedule": "Daily", "note": note_clean or "No School"}
+
+    # Clean away standalone day-of-month numbers so letter matching is exact
+    up_no_nums = re.sub(r"\b([1-9]|[12]\d|3[01])\b", " ", up)
+    up_no_nums = re.sub(r'["“”\']', "", up_no_nums)
 
     letter = ""
-    m_exact = re.fullmatch(r"([ABCDX])(?:\s*DAY)?", up)
-    if m_exact:
-        letter = m_exact.group(1)
-    else:
-        m_word = re.search(r"\b([ABCDX])\s*DAY\b", up) or re.search(r"\bDAY\s*([ABCDX])\b", up)
-        if m_word:
-            letter = m_word.group(1)
-        elif up in ("A", "B", "C", "D", "X"):
-            letter = up
+    m_word = (
+        re.search(r"\b([ABCDX])\s*DAY\b", up_no_nums)
+        or re.search(r"\bDAY\s*([ABCDX])\b", up_no_nums)
+        or re.search(r"(?:^|[\s|/,\-])([ABCDX])(?:$|[\s|/,\-])", up_no_nums)
+    )
+    if m_word:
+        letter = m_word.group(1)
 
     if not letter:
         return None
@@ -1166,7 +1188,10 @@ def _extract_letter_and_sched(text_blob: str) -> Optional[Dict[str, str]]:
     elif "EARLY" in up or "DISMISSAL" in up or "HALF DAY" in up:
         sched = "X Day Early Dismissal" if letter == "X" else "Early Dismissal"
 
-    note_clean = re.sub(r"\b([ABCDX])\s*DAY\b", "", raw, flags=re.I).strip(" -:|•")
+    note_clean = re.sub(r"\b([1-9]|[12]\d|3[01])\b", "", raw)
+    note_clean = re.sub(r"\b([ABCDX])\s*DAY\b", "", note_clean, flags=re.I)
+    note_clean = re.sub(r"\b(EARLY DISMISSAL|CONNECT|2 HOUR DELAY)\b", "", note_clean, flags=re.I)
+    note_clean = re.sub(r'["“”\']', "", note_clean).strip(" -:|•\n")
     if note_clean.upper() in ("A", "B", "C", "D", "X", "DAILY"):
         note_clean = ""
 
@@ -1180,37 +1205,89 @@ def fetch_live_shs_spreadsheet_map(sheet_url: str) -> Dict[str, Dict[str, str]]:
         return {}
     try:
         req = urllib.request.Request(csv_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             content = resp.read().decode("utf-8", errors="replace")
-        reader = csv.reader(io.StringIO(content))
+
+        if "<html" in content[:350].lower():
+            return {"__ERROR__": {"note": "Google Sheet is private/restricted (returned login HTML). Set sharing to 'Anyone with the link'."}}
+
+        rows = list(csv.reader(io.StringIO(content)))
         mapping: Dict[str, Dict[str, str]] = {}
-        for row in reader:
-            cells = [c.strip() for c in row if c and c.strip()]
-            if len(cells) < 2:
-                continue
-            found_date: Optional[date] = None
-            date_idx = -1
-            for idx, cell in enumerate(cells):
-                d_parsed = _parse_flexible_sheet_date(cell)
-                if d_parsed:
-                    found_date = d_parsed
-                    date_idx = idx
-                    break
-            if not found_date:
-                continue
-            other_cells = [c for i, c in enumerate(cells) if i != date_idx]
-            combined_info = " | ".join(other_cells)
-            parsed_day = _extract_letter_and_sched(combined_info)
-            if parsed_day:
-                if len(other_cells) >= 2 and not parsed_day.get("note"):
-                    extra = " • ".join(other_cells[1:])
-                    if extra.upper() not in ("DAILY", "A", "B", "C", "D", "X"):
-                        parsed_day["note"] = extra
-                parsed_day["source"] = "Live Spreadsheet"
-                mapping[found_date.isoformat()] = parsed_day
+
+        # Track active (month, year) per column for side-by-side 2-month visual wall calendars
+        col_month: Dict[int, Tuple[int, int]] = {}
+        col_last_day: Dict[int, int] = {}
+
+        for r_idx, row in enumerate(rows):
+            # 1. Detect month headers (e.g., "AUGUST/SEPTEMBER" in cols 0-4, "OCTOBER" in cols 5-9)
+            month_hits: List[Tuple[int, str]] = []
+            for c_idx, cell in enumerate(row):
+                up = str(cell or "").upper()
+                found_m = [m for m in _MONTH_MAP if m in up]
+                if found_m:
+                    month_hits.append((c_idx, found_m[0]))
+            if month_hits:
+                col_month.clear()
+                col_last_day.clear()
+                for i, (start_c, m_name) in enumerate(month_hits):
+                    end_c = month_hits[i + 1][0] if i + 1 < len(month_hits) else len(row)
+                    for c in range(start_c, end_c):
+                        col_month[c] = _MONTH_MAP[m_name]
+
+            # 2. Parse each cell in the row
+            for c_idx, cell in enumerate(row):
+                raw_cell = str(cell or "").strip()
+                if not raw_cell:
+                    continue
+
+                # Check standard explicit date first (e.g., "11/25/2026")
+                d_explicit = _parse_flexible_sheet_date(raw_cell)
+                if d_explicit:
+                    same_row = [c.strip() for i, c in enumerate(row) if i != c_idx and c and c.strip()]
+                    parsed_day = _extract_letter_and_sched(" | ".join(same_row)) if same_row else None
+                    if parsed_day:
+                        parsed_day["source"] = "Live Spreadsheet"
+                        mapping[d_explicit.isoformat()] = parsed_day
+                    continue
+
+                # Grid calendar cell: contains a day number (1-31) plus optional label like "EARLY DISMISSAL 25"
+                if c_idx not in col_month:
+                    continue
+                if re.search(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|1,\s*3,\s*5,\s*7|2,\s*4,\s*6,\s*8|Semester)\b", raw_cell, re.I):
+                    continue
+
+                day_nums = [int(n) for n in re.findall(r"\b([1-9]|[12]\d|3[01])\b", raw_cell)]
+                if len(day_nums) != 1:
+                    continue
+                day_num = day_nums[0]
+
+                m_num, yr_num = col_month[c_idx]
+                # Handle combined AUGUST/SEPTEMBER block rolling from Aug 31 -> Sep 1
+                prev_day = col_last_day.get(c_idx, 0)
+                if m_num == 8 and prev_day >= 24 and day_num <= 15:
+                    m_num = 9
+                    col_month[c_idx] = (9, 2026)
+                col_last_day[c_idx] = day_num
+
+                try:
+                    d_obj = date(yr_num, m_num, day_num)
+                except ValueError:
+                    continue
+
+                # Combine text from this cell AND the cell directly below it (where A/B/C/D/X letter lives)
+                below_val = ""
+                if r_idx + 1 < len(rows) and c_idx < len(rows[r_idx + 1]):
+                    below_val = str(rows[r_idx + 1][c_idx] or "").strip()
+
+                combined = f"{raw_cell} | {below_val}".strip(" |")
+                parsed_day = _extract_letter_and_sched(combined)
+                if parsed_day:
+                    parsed_day["source"] = "Live Spreadsheet"
+                    mapping[d_obj.isoformat()] = parsed_day
+
         return mapping
-    except Exception:
-        return {}
+    except Exception as e:
+        return {"__ERROR__": {"note": f"Fetch failed: {e}"}}
 
 
 def get_default_shs_sheet_url() -> str:
@@ -1240,7 +1317,7 @@ def get_shs_day_info(target_date: date, custom_sheet_url: str = "") -> Dict[str,
         res["source"] = "Calendar"
         return res
 
-    school_start = date(2026, 9, 1)
+    school_start = date(2026, 8, 26)
     school_end = date(2027, 6, 18)
     if target_date < school_start or target_date > school_end:
         return {"letter": "A", "schedule": "Daily", "note": "Standard Rotation", "source": "Calendar"}
@@ -1628,7 +1705,6 @@ def get_global_feature_statuses(force_refresh: bool = False) -> Dict[str, str]:
 
 
 def is_feature_enabled_for_user(feature_key: str, email: str) -> bool:
-    """Admin always has access; regular users are blocked if status == 'admin_only'."""
     if is_admin_user(email):
         return True
     return get_global_feature_statuses().get(feature_key, "released") != "admin_only"
@@ -2938,15 +3014,15 @@ def show_updates_dialog(user_id: str, email: str, is_first_time: bool = False):
         st.markdown(
             """
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.9 NEW</span> <b>Streamlined Dashboard & Feature Release Controls</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v4.0 NEW</span> <b>SHS 2-Month Wall Calendar Grid Sync</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Cleaned up the toolbar for faster task management, upgraded the Beta & Public Release rollout engine, and kept two-way creator feedback threads front and center.
+                    Upgraded the SHS Bell Schedule spreadsheet sync engine to directly read side-by-side 2-month school calendar grids (automatically detecting A/B/C/D/X days, Connect Wednesdays, Early Dismissals, and Holidays).
                 </div>
             </div>
             <div class='update-card'>
-                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.4</span> <b>Live SHS Bell Schedule & Spreadsheet Sync</b></div>
+                <div style='margin-bottom:5px;'><span class='update-ver-badge'>v3.9</span> <b>Feature Release Controls & Two-Way Feedback</b></div>
                 <div style='font-size:0.83rem; line-height:1.45;'>
-                    Auto-detects A/B/C/D/X days, Connect Wednesdays, delays, and early dismissals with live class countdowns, per-day lunch waves (L1/L2/L3), Study Hall rooms, and optional Google Sheet calendar sync.
+                    Added Beta/Public Release rollout controls and two-way creator feedback threads.
                 </div>
             </div>
             """,
@@ -3310,7 +3386,7 @@ def render_assignment_grid_fragment(user_id: str, view_filter: str, user_prio_mo
         df_grid = df_all[(df_all["status"] != "Done") & ((df_all["atype"] == "Other") | (df_all["course"] == "OTHER"))]
 
     if df_grid.empty:
-        st.markdown("<div style='padding:45px 0; text-align:center; font-size:0.9rem;' class='card-note-text'>GOOD! YOU FINISHED YOU HOMEOWORK, GO HAVE FUN, OR DO THE OTHA STUDYING!</div>", unsafe_allow_html=True)
+        st.markdown("<div style='padding:45px 0; text-align:center; font-size:0.9rem;' class='card-note-text'>No active assignments in this view.</div>", unsafe_allow_html=True)
         return
 
     df_sorted = df_grid.copy()
@@ -3445,7 +3521,7 @@ def render_shs_bell_schedule_fragment(user_id: str, email: str, is_light: bool):
 
         st.markdown("**4. Live SHS Calendar Spreadsheet Link (Optional)**")
         new_sheet_url = st.text_input(
-            "Google Sheet URL (auto-syncs A/B/C/D/X days, holidays & special schedules)",
+            "Google Sheet URL (supports 2-month SHS calendar grids & date lists)",
             value=str(shs_cfg.get("sheet_url", "")),
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="shs_sheet_url_input",
@@ -3454,19 +3530,46 @@ def render_shs_bell_schedule_fragment(user_id: str, email: str, is_light: bool):
         sc1, sc2 = st.columns([2, 1])
         with sc1:
             if st.button("Save My SHS Schedule", key="save_shs_cfg_btn", use_container_width=True):
+                clean_url = new_sheet_url.strip()
                 updated_shs = dict(shs_cfg)
                 updated_shs.update({
                     "lunches": new_lunches,
                     "periods": new_periods,
                     "study_rooms": new_rooms,
-                    "sheet_url": new_sheet_url.strip(),
+                    "sheet_url": clean_url,
                 })
                 _write_shs_config(user_id, updated_shs)
-                st.success("Saved your personalized SHS bell schedule!")
+                if clean_url:
+                    fetch_live_shs_spreadsheet_map.clear()
+                    test_map = fetch_live_shs_spreadsheet_map(clean_url)
+                    if "__ERROR__" in test_map:
+                        st.error(test_map["__ERROR__"]["note"])
+                    elif test_map:
+                        st.success(f"Saved & synced {len(test_map)} school days from your spreadsheet!")
+                    else:
+                        st.warning("Saved settings, but no calendar dates were matched in the spreadsheet.")
+                else:
+                    st.success("Saved your personalized SHS bell schedule!")
+                safe_rerun("app")
         with sc2:
             if st.button("Refresh Calendar Sync", key="refresh_shs_sheet_btn", use_container_width=True):
+                clean_url = new_sheet_url.strip() or str(shs_cfg.get("sheet_url", "")).strip() or get_default_shs_sheet_url()
+                if clean_url and clean_url != str(shs_cfg.get("sheet_url", "")).strip():
+                    updated_shs = dict(shs_cfg)
+                    updated_shs["sheet_url"] = clean_url
+                    _write_shs_config(user_id, updated_shs)
                 fetch_live_shs_spreadsheet_map.clear()
-                st.success("Calendar cache refreshed!")
+                if clean_url:
+                    test_map = fetch_live_shs_spreadsheet_map(clean_url)
+                    if "__ERROR__" in test_map:
+                        st.error(test_map["__ERROR__"]["note"])
+                    elif test_map:
+                        st.success(f"Synced {len(test_map)} school days from spreadsheet!")
+                    else:
+                        st.warning("Connected to sheet, but 0 calendar dates were parsed.")
+                else:
+                    st.info("Paste your Google Sheet URL above first, then click Refresh Calendar Sync.")
+                safe_rerun("app")
 
     if active_letter in ("NO SCHOOL", "WEEKEND") and override_letter == "Auto":
         note_str = detected_info.get("note") or ("Weekend" if active_letter == "WEEKEND" else "No School")
@@ -3655,7 +3758,7 @@ def render_schedule_and_ai_fragment(user_id: str, email: str, user_prio_mode: st
             status, plan = plan_res.get("status"), plan_res.get("plan", {})
 
             if status == "no_tasks":
-                st.info("GOOD! YOU FINISHED YOU HOMEOWORK, GO HAVE FUN, OR DO THE OTHA STUDYING! ONE MORE OPTION: Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
+                st.info("No active assignments. Add items in the 'Assignments', 'Tests & Quizzes', or 'Other' tab.")
             elif status == "all_done":
                 st.success("All assignments marked completed!")
             elif status == "success" and plan:
@@ -3897,7 +4000,7 @@ def main():
     elif prio_scales_enabled and get_prio_cached(user_id) is None:
         show_prio_config_dialog(user_id, email)
 
-    # Top Navigation Pill Bar (dynamically hides admin_only tabs for non-admins)
+    # Top Navigation Pill Bar
     sched_tab_label = "Schedule & AI Planner" if ai_enabled else "Weekly Schedule"
     nav_options = ["Assignments", "Tests & Quizzes", "Other", sched_tab_label]
     if shs_enabled:
